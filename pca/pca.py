@@ -20,14 +20,14 @@ import time
 
 import numpy as np
 # All scalers used in case SPARK=True
-from pyspark.ml.feature import PCA as spark_pca
+import pyspark.ml.feature
 
 from pyspark.ml.feature import VectorAssembler
 from pyspark.sql.functions import udf
 from pyspark.sql.types import DoubleType
-
+import tkinter
 # All scalers used in case SPARK=False
-from sklearn.decomposition import PCA as sk_pca
+import sklearn.decomposition
 
 # IKATS utils
 from ikats.core.data.ts import TimestampedMonoVal
@@ -43,6 +43,7 @@ from ikats.core.resource.client.temporal_data_mgr import DTYPE
 Principal component analysis (PCA) Algorithm: Feature reduction, using Singular 
 Value Decomposition (SVD).
 
+Must be performed on scaled values (Z-norm) for coherent results.
 Orthogolnal transformation
 Axis changes
 
@@ -53,24 +54,103 @@ PC: principal components
 # Define a logger for this operator
 LOGGER = logging.getLogger(__name__)
 
-# Dict containing list of scaler used in operator.
-# Structure of the result: dict
-# {'no_spark': sklearn.preprocessing scaler,
-# 'spark': pyspark.ml.feature scaler}
-# TODO: changer, ça n'est pas adapté
-# These objects are not init (for 'spark' scalers, need to init a Spark Context else, raise error).
-PCA_DICT = {
-    "PCA": {'no_spark': sk_pca,
-            'spark': spark_pca},
-    # 'no_spark': need to set `copy=False`,
-}
-
-# Example: To init sklearn (-> no spark) :
-# PCA_DICT["PCA"]['no_spark']()
-
 # SPARK CRITERION
 NB_TS_CRITERIA = 100
 NB_POINTS_BY_CHUNK = 50000
+
+# (Intermediate) Names of created columns (during spark operation only)
+_INPUT_COL = "features"
+_OUTPUT_COL = "PCAFeatures"
+
+
+class Pca(object):
+    """
+    Wrapper of sklearn / pyspark.ml PCA algo. Uniform the behaviour of sklearn / pyspark.ml.
+    """
+
+    def __init__(self, n_components=None, spark=False):
+        """
+        Init `Pca` object.
+
+        :param n_components: The number of principal component to keep (positive int)
+        :type n_components: int
+
+        :param spark: Use spark (case True) or not. Default False.
+        :type spark: Bool
+        """
+        self.spark = spark
+
+        self.n_components = n_components
+
+        # Init self.pca
+        self._get_pca()
+
+    def _get_pca(self):
+        """
+        Init PCA. Note that if self.spark=True, function init a SSessionManager itself.
+        """
+        # CASE Spark=True (pyspark)
+        # ----------------------------------
+        if self.spark:
+            # Init SparkSession (necessary for init Spark Scaler)
+            SSessionManager.get()
+
+            # Init pyspark.ml.feature PCA object
+            self.pca = pyspark.ml.feature.PCA()
+
+            # Additional arguments to set
+            # --------------------------------
+            # Set n_components
+            self.pca.setK(self.n_components)
+            # Set input / output columns names (necessary for Spark functions)
+            self.pca.setInputCol(_INPUT_COL)
+            self.pca.setOutputCol(_OUTPUT_COL)
+
+        # Indeed: PCA requires a Vector column as an input.
+        # You have to assemble your data first.
+
+        # CASE Spark=False (sklearn)
+        # -----------------------------------
+        else:
+            # Init sklearn.decomposition pca object
+            self.pca = sklearn.decomposition.PCA()
+
+            # Additional arguments to set
+            # --------------------------------
+            # Set n_components
+            self.pca.n_components = self.n_components
+            # Perform an inplace scaling (for performance)
+            self.pca.copy = False
+
+    def perform_pca(self, x):
+        """
+        Perform pca. This function replace:
+            - the sklearn's `fit_transform()`
+            - the pyspark's `fit().transform()`
+
+        :param x: The data to scale,
+            * shape = (N, M) if np.array
+            * df containing at least column [_INPUT_COL] containing`vector` type if spark DataFrame
+        :type x: np.array or pyspark.sql.DataFrame
+
+        :return: Object x scaled with `self.pca`
+        :rtype: type(x)
+        """
+        # CASE : Use spark = True: use pyspark
+        # --------------------------------------------------------
+        if self.spark:
+            return self.pca.fit(x).transform(x)
+
+        # CASE : Use spark = False: use sklearn
+        # --------------------------------------------------------
+        else:
+
+            # Particular cases (align behaviour on Spark results)
+            # -----------------------------------------------------
+            # TODO: conformer le comportement sklearn avec celui de spark
+            pass
+
+            return self.pca.fit_transform(x)
 
 
 def spark_pca(ts_list,
@@ -86,7 +166,9 @@ def spark_pca(ts_list,
     :return:
     """
     pass
-
+    # TODO: assembler les colonnes en une seule, en utilisant VectorAsssembler
+    # Indeed: PCA requires a Vector column as an input.
+    # You have to assemble your data first.
 
 def pca(ts_list, fid_pattern, n_components):
     """
@@ -106,13 +188,19 @@ def pca_ts_list(ts_list,
                 spark=None,
                 ):
     """
+    Wrapper: compute a PCA on a provided ts_list
 
     :param ts_list: List of TS to scale
     :type ts_list: List of dict
     ..Example: [ {'tsuid': tsuid1, 'funcId' funcId1}, ...]
 
-    :param n_components:
-    :param fid_pattern:
+    :param n_components: Number of principal components to keep.
+    :type n_components: int
+
+    :param fid_pattern: pattern used to name the FID of the output TSUID.
+           {fid} will be replaced by the FID of the original TSUID FID
+           {cp_id} will be replaced by the id of the current principal component
+    :type fid_pattern: str
 
     :param nb_points_by_chunk: size of chunks in number of points
     (assuming time series is periodic and without holes)
