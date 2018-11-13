@@ -172,6 +172,14 @@ class TesScale(unittest.TestCase):
                 # noinspection PyTypeChecker
                 pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern=2)
 
+            # table_name
+            # ----------------------------
+            # wrong type (not str)
+            msg = "Testing arguments : Error in testing `table_name` type"
+            with self.assertRaises(TypeError, msg=msg):
+                # noinspection PyTypeChecker
+                pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern="a", table_name=2)
+
             # nb_points_by_chunk
             # ----------------------------
             # Wrong type (not int)
