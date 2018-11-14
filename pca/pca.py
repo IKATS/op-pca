@@ -19,6 +19,8 @@ import logging
 import time
 from collections import defaultdict
 import numpy as np
+import re
+
 # All scalers used in case SPARK=True
 import pyspark.ml.feature
 
@@ -62,7 +64,7 @@ NB_POINTS_BY_CHUNK = 50000
 _INPUT_COL = "features"
 _OUTPUT_COL = "PCAFeatures"
 
-# Other arguments
+# SEED
 SEED = 0
 # Set the seed: making results reproducible
 np.random.seed(SEED)
@@ -135,6 +137,8 @@ class Pca(object):
             - the sklearn's `fit_transform()`
             - the pyspark's `fit().transform()`
 
+        Make an uniform behaviour between sklearn and spark.
+
         :param x: The data to scale,
             * shape = (N, M) if np.array
             * df containing at least column [_INPUT_COL] containing`vector` type if spark DataFrame
@@ -187,7 +191,12 @@ def spark_pca(ts_list,
     (assuming time series is periodic and without holes)
     :type nb_points_by_chunk: int
 
-    :return:
+    :returns:two objects:
+        * ts_list : A list of dict composed by original TSUID and the information about the new TS
+        * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
+    :rtype: Tuple composed by:
+        * list of dict
+        * str
     """
     pass
     # TODO: assembler les colonnes en une seule, en utilisant VectorAsssembler
@@ -214,18 +223,11 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     :type table_name: str
 
     :returns:two objects:
-    * ts_list : A list of dict composed by original TSUID and the information about the new TS
-    * table: An array containing variance explained, and cumulative variance explained per PC (3 col)
+        * ts_list : A list of dict composed by original TSUID and the information about the new TS
+        * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
-        * np.array
-
-    ..Example: result1=[{"tsuid": new_tsuid,
-                        "funcId": new_fid
-                        "origin": tsuid
-                        }, ...]
-
-                result2=[]
+        * str
     """
 
     # 0/ Init Pca object
@@ -262,6 +264,8 @@ def pca(ts_list, fid_pattern, n_components, table_name):
 
     # 3/ Save transformed TS list
     # ------------------------------------------------
+    fid_pattern = fid_pattern.replace("{pc_id}", "{}")  # remove `pc_id` from `fid_pattern`
+
     def __save_ts(data, original_tsuid, PCId):
         """
         Build one resulting TS and save it.
@@ -280,7 +284,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
 
         # 1/ Generate new FID
         # -------------------------------
-        # Add id of current PC (in 1..k), `fid_pattern` contains str '{pc_id}'
+        # Add id of current PC (in 1..k), `fid_pattern` contains str '{}'
         new_fid = fid_pattern.format(PCId)
         # Example: "PORTFOLIO_pc1"
         try:
@@ -317,41 +321,44 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     result1 = [__save_ts(data=transformed_data[:, i],
                          original_tsuid=ts_list[i],
                          PCId=i+1  # pc from 1 to n_components + 1 (more readable for user)
-                         ) for i in transformed_data.shape[1]]
+                         ) for i in range(transformed_data.shape[1])]
 
     LOGGER.debug("Result import time: %.3f seconds", time.time() - start_saving_time)
 
     # 4/ Explained variance result (table)
     # ------------------------------------------------
     # Function should return table containing:
-    # * List of PC ('PC1', ... 'PCk'), where k = n_components + 1
+    # * List of PC ('PC1', ... 'PCk'), where k = n_components + 1 -> row names
     # * Explained variance per PC
+    # * Cumulative explained variance per PC
+
+    # Get the explained variance per PC (in %)
     explained_var = current_pca.pca.explained_variance_ratio_
 
     # Get the cumulative explained variance
     cum_explained_var = np.cumsum(explained_var)
 
-    # Create row names
+    # Create row names ('PC1', 'PC2', ...)
     pc_list = ["PC_" + str(i) for i in range(1, n_components + 1)]
 
-    # Create resulting table in IKATS format
+    # Create resulting table in IKATS format:
+    # table containing : PC id, explained_var, cum_explained_var
     result2 = _format_table(matrix=np.array([explained_var, cum_explained_var]).T,
-                            colnames=['explained variance','cumulative explained variance'],
                             rownames=pc_list,
                             table_name=table_name)
 
-    # Build result (table containing : PC id, explained_var, cum_explained_var)
-    IkatsApi.table.create(result2)
+    # Save the table
+    IkatsApi.table.create(data=result2)
 
     # 5/ Build final result
     # ------------------------------------------------
-    return result1, result2
+    return result1, table_name
 
 
 def pca_ts_list(ts_list,
                 n_components=None,
                 fid_pattern="PC{pc_id}",
-                table_name="Variance explained PCA",
+                table_name="Variance_explained_PCA",
                 nb_points_by_chunk=NB_POINTS_BY_CHUNK,
                 nb_ts_criteria=NB_TS_CRITERIA,
                 spark=None,
@@ -390,19 +397,20 @@ def pca_ts_list(ts_list,
 
     :returns:two objects:
         * ts_list : A list of dict composed by original TSUID and the information about the new TS
-        * table: An array containing variance explained, and cumulative variance explained per PC (3 col)
+        * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
-        * np.array
+        * str
 
-    ..Example: result1=[{"tsuid": new_tsuid,
+    ..Example:
+    result1=[{"tsuid": new_tsuid,
                         "funcId": new_fid
                         "origin": tsuid
                         }, ...]
 
-                result2=[]
+
+    result2 = "Variance explained PCA"
     """
-    # TODO: compléter la doc: exemple de résultat
 
     # 0/ Check inputs
     # ----------------------------------------------------------
@@ -435,6 +443,8 @@ def pca_ts_list(ts_list,
     # Table name (str)
     if type(table_name) is not str:
         raise TypeError("Arg. `table_name` is {}, expected `str`".format(type(table_name)))
+    if table_name is None or re.match('^[a-zA-Z0-9-_]+$', table_name) is None:
+        raise ValueError("Error in table name")
 
     # Nb points by chunk (int > 0)
     if type(nb_points_by_chunk) is not int or nb_points_by_chunk < 0:
@@ -460,7 +470,8 @@ def pca_ts_list(ts_list,
         return pca(ts_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components, table_name=table_name)
 
 
-def _format_table(matrix, colnames, rownames, table_name):
+def _format_table(matrix, rownames, table_name,
+                  colnames=['explained variance', 'cumulative explained variance']):
     """
     Fill an ikats table structure with table containing explained variance.
 
@@ -469,14 +480,14 @@ def _format_table(matrix, colnames, rownames, table_name):
     :param matrix: array containing values to store
     :type matrix: numpy array
 
-    :param colnames: The name of all column used (take care to the order)
-    :type colnames: list of str
-
     :param rownames: The name of all rows used (take care to the order)
     :type rownames: list of str
 
     :param : table_name: Name of the table to save
     :type : table_name: str
+
+    :param colnames: The name of all column used (take care to the order)
+    :type colnames: list of str
 
     :return: dict formatted as awaited by functional type table
     :rtype: dict
@@ -526,6 +537,6 @@ def _format_table(matrix, colnames, rownames, table_name):
     table['headers']['row']['data'].extend(rownames)
 
     # Filling cells content
-    table['content']['cells'] = matrix.tolist()
+    table['content']['cells'] = np.array(matrix).tolist()
 
     return table

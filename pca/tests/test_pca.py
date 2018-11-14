@@ -19,9 +19,10 @@ limitations under the License.
 import logging
 import unittest
 import numpy as np
+from collections import defaultdict
 
 # Core code
-from ikats.algo.pca.pca import pca_ts_list, Pca, SEED, _INPUT_COL, _OUTPUT_COL
+from ikats.algo.pca.pca import pca_ts_list, Pca, SEED, _INPUT_COL, _OUTPUT_COL, _format_table
 from ikats.core.resource.api import IkatsApi
 
 # sklearn
@@ -182,12 +183,153 @@ class TesScale(unittest.TestCase):
         self.assertEqual(value.getOutputCol(), _OUTPUT_COL,
                          msg=msg.format(value.getOutputCol(), _OUTPUT_COL))
 
+    @staticmethod
+    def check_type_table(arg_to_test):
+        """
+        Test if argument `arg_to_test` is an IKATS table (dict with particular keys).
+
+        :param arg_to_test: The element to test
+
+        :return: True if `arg_to_test` is an IKATS table, False else.
+        :rtype: bool
+
+        Expected result:
+        {'content': {
+            'cells': [['0.7', '0.7'],
+                      ['0.3', '1.0']]
+            },
+        'headers': {
+            'col': {'data': ['Var', 'explained variance', 'cumulative explained variance']},
+            'row': {'data': ['PC', 'PC1', 'PC2']}
+            },
+        'table_desc': {
+            'desc': 'Explained variance from PCA operator',
+            'name': 'UNIT_TEST_TABLE_RESULT',
+            'title': 'Variance explained'
+            }
+        }
+
+        ..Note: All Errors raised are `TypeError` (easier to test)
+        """
+        # ----------------------------------------------------
+        # 1/ Test global type (dict)
+        # ----------------------------------------------------
+        msg = "Arg. `arg_to_test` have type {}, expected `defaultdict`"
+        if type(arg_to_test) is not defaultdict:
+            raise TypeError(msg.format(type(arg_to_test)))
+
+        #
+        # ----------------------------------------------------
+        # 2/ Test "level one" keys (['content', 'header', 'table_desc'])
+        # ----------------------------------------------------
+        result = [k in ['content', 'headers', 'table_desc'] for k in list(arg_to_test.keys())]
+
+        msg = "Arg. `arg_to_test` have incorrect keys, get {}, expected `['content', 'headers', 'table_desc']`"
+        # Test if `result` contains at least one `False`
+        if all(result) is False:
+            raise TypeError(msg.format(list(arg_to_test.keys())))
+
+        # ----------------------------------------------------
+        #  3/ Test "level two" keys: These keys have to exist
+        # ----------------------------------------------------
+        # ['content']['cells'], ['headers']['row'], ['headers']['col'], ['table_desc']['desc'],
+        # ['table_desc']['name'], ['table_desc']['title']
+
+        # sub-key ['content']['cells']
+        # ------------------------
+        msg = "Arg. `arg_to_test` have incorrect sub-key, get {}, expected `['cells']`"
+
+        # Test if `result` contains at least one `False`
+        if list(arg_to_test['content'].keys()) != ['cells']:
+            raise TypeError(msg.format(list(arg_to_test['content'].keys())))
+
+        # sub-keys ['headers']['row'], ['headers']['col']
+        # -------------------------------------
+        msg = "Arg. `arg_to_test` have incorrect sub-keys, get {}, expected `['row', 'col']`"
+
+        if set(arg_to_test['headers'].keys()) != set(('row', 'col')):
+            raise TypeError(msg.format(list(arg_to_test['headers'].keys())))
+
+        # sub-keys ['table_desc']['desc'], ['table_desc']['name'], ['table_desc']['title']
+        # -------------------------------------------------------------------------------
+        msg = "Arg. `arg_to_test` have incorrect sub-keys, get {}, expected `['desc', 'name', 'title']`"
+
+        if set(arg_to_test['table_desc'].keys()) != set(['desc', 'name', 'title']):
+            raise TypeError(msg.format(list(arg_to_test['desc'].keys())))
+
+        # ----------------------------------------------------
+        # 4/ Test "level three" keys: These keys have to exist
+        # ----------------------------------------------------
+
+        # sub-keys ['headers']['row']['data'], ['headers']['col']['data']
+        # -------------------------------------
+        msg = "Arg. `arg_to_test` have incorrect sub-keys, get {}, expected `{}`"
+
+        if set(arg_to_test['headers']['col'].keys()) != set(['data']):
+            raise TypeError(msg.format(set(arg_to_test['headers']['col'].keys()), set(['data'])))
+        if set(arg_to_test['headers']['row'].keys()) != set(['data']):
+            raise TypeError(msg.format(set(arg_to_test['headers']['row'].keys()), set(['data'])))
+        # ----------------------------------------------------
+        # 5/ Test content type: These type have to match
+        # ----------------------------------------------------
+        # ['content']['cells']: list,
+        # ['headers']['row']['data'], ['headers']['col']['data']: list of str
+        # ['table_desc']['desc'], ['table_desc']['name'], ['table_desc']['title'] : str
+
+        # ['content']['cells']: np.array
+        # -------------------------------
+        msg = "Error in key: `['content']['cells']`, get type {}, expected `list`"
+
+        if type(arg_to_test['content']['cells']) is not list:
+            raise TypeError(msg.format(type(arg_to_test['content']['cells'])))
+
+        #  ['headers']['row']['data'], ['headers']['col']['data']: list of str
+        # --------------------------------------------------
+        # Test type list
+        if type(arg_to_test['headers']['row']['data']) is not list:
+            raise TypeError("Error in key: `['headers']['row']['data']`, get type `{}`, expected `list`".format(
+                type(arg_to_test['headers']['row']['data'])))
+        if type(arg_to_test['headers']['col']['data']) is not list:
+            raise TypeError("Error in key: `['headers']['col']['data']`, get type `{}`, expected `list`".format(
+                type(arg_to_test['headers']['col']['data'])))
+
+        # Test if the lists contains str only
+        result = [type(k) is str for k in arg_to_test['headers']['row']['data']]
+        if all(result) is False:
+            raise TypeError("Error in key ['headers']['row']['data'], get {}, expected list full of str".format(
+                [type(k) is str for k in arg_to_test['headers']['row']['data']]))
+        result = [type(k) is str for k in arg_to_test['headers']['col']['data']]
+        if all(result) is False:
+            raise TypeError("Error in key ['headers']['col']['data'], get {}, expected list full of str".format(
+                [type(k) is str for k in arg_to_test['headers']['col']['data']]))
+
+        #  ['table_desc']['desc'], ['table_desc']['name'], ['table_desc']['title'] : str
+        # -------------------------------------------------------------------------------
+        result = [type(arg_to_test['table_desc'][key]) for key in ['desc', 'name', 'title']]
+
+        msg = "Error in content of sub-keys ['table_desc']['desc'], ['table_desc']['name'], ['table_desc']['title']," \
+              " get {}, expected `str`"
+        # Test if `result` contains at least one `False`
+        if result == 3*[type(str)]:
+            raise TypeError(msg.format(result))
+
     def test_format_table(self):
         """
         Testing function `_format_table`
         """
-        pass
-    
+        # CREATE DATA
+        table_name="UNIT_TEST_TABLE_RESULT"
+        matrix=np.array([['0.7', '0.7'], ['0.3', '1.0']])
+        rownames= ["PC1", "PC2"]
+
+        # GENERATE TABLE
+        table = _format_table(matrix=matrix, rownames=rownames, table_name=table_name)
+        # Arg. `colnames` let to default
+        # (`['explained variance', 'cumulative explained variance']`)
+
+        # Check
+        self.check_type_table(table)
+
     def test_arguments_pca_ts_list(self):
         """
         Testing behaviour when wrong arguments on function `pca_ts_list`.
