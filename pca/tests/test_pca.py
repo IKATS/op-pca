@@ -21,9 +21,14 @@ import unittest
 import numpy as np
 
 # Core code
-from ikats.algo.pca.pca import pca_ts_list
+from ikats.algo.pca.pca import pca_ts_list, Pca, SEED, _INPUT_COL, _OUTPUT_COL
 from ikats.core.resource.api import IkatsApi
 
+# sklearn
+import sklearn.decomposition
+
+# pyspark
+import pyspark.ml.feature
 
 # Set LOGGER
 LOGGER = logging.getLogger()
@@ -45,6 +50,9 @@ USE_CASE = {
 # TOLERANCE for tests: we assume that this tol is acceptable
 # (results between Spark and sklearn can be different at `tolerance`)
 tolerance = 1e-5
+
+# Set the seed: making results reproducible
+np.random.seed(SEED)
 
 
 def gen_ts(ts_id):
@@ -86,11 +94,11 @@ def gen_ts(ts_id):
     for ts in range(ts_content.shape[0]):
 
         # Generate fid
-        fid = fid + '_TS_{}'.format(ts)
+        current_fid = fid + '_TS_{}'.format(ts)
         # Example: "UNIT_TEST_PCA_1_TS_0" -> test case 0, ts n°0
 
         # Create TS
-        current_ts_created = IkatsApi.ts.create(fid=fid,
+        current_ts_created = IkatsApi.ts.create(fid=current_fid,
                                                 data=ts_content[ts])
         # `current_ts_created`: dict containing tsuid, fid created, and status
 
@@ -99,10 +107,10 @@ def gen_ts(ts_id):
             raise SystemError("Error while creating TS %s" % ts_id)
 
         # Generate metadata (`qual_nb_points`, `metric`, `funcId`
-        # NO PERIOD
+        # NO PERIODnt_
         IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="qual_nb_points", value=ts_content.shape[1], force_update=True)
         IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="metric", value="metric_%s" % ts_id, force_update=True)
-        IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="funcId", value=fid, force_update=True)
+        IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="funcId", value=current_fid, force_update=True)
 
         # Finally, add to result
         result.append({"tsuid": current_ts_created["tsuid"],
@@ -126,7 +134,61 @@ class TesScale(unittest.TestCase):
             # Delete created TS
             IkatsApi.ts.delete(tsuid=ts_item['tsuid'], no_exception=True)
 
-    def test_arguments_scale_ts_list(self):
+    def test_class_pca(self):
+        """
+        Testing class `Pca`
+        """
+        # Test default implementation (no spark, n_components=None, random_state = SEED)
+        # -----------------------------------------------------------------------------
+        value = Pca().pca
+
+        # -> Should be object sklearn.decomposition.PCA
+        expected_type = sklearn.decomposition.PCA
+        msg = "Error in init `Pca` object, get type {}, expected type {}"
+        self.assertEqual(type(value), expected_type, msg=msg.format(type(value), expected_type))
+
+        # -> Arg `copy` should be set to `False`
+        msg = "Error in init `Pca`, arg `copy` is {}, should be set to `False` "
+        self.assertFalse(value.copy, msg=msg.format(value.copy))
+
+        # -> Arg `n_components` should be set to `None`
+        msg = "Error in init `Pca`, arg `n_components` is {}, should be set to `None` "
+        self.assertIsNone(value.n_components, msg=msg.format(value.n_components))
+
+        # -> Arg `random_state` should be set to `SEED`
+        msg = "Error in init `Pca`, arg `random_state` is {}, should be set to `{}` "
+        self.assertEqual(value.random_state, SEED, msg=msg.format(value.random_state, SEED))
+
+        # Test implementation with spark
+        # ----------------------------------------------
+        value = Pca(spark=True).pca
+
+        # -> Should be object sklearn.decomposition.PCA
+        expected_type = pyspark.ml.feature.PCA
+        msg = "Error in init `Pca` object, get type {}, expected type {}"
+        self.assertEqual(type(value), expected_type, msg=msg.format(type(value), expected_type))
+
+        # -> Arg `n_components` should be set to `None`
+        msg = "Error in init `Pca`, arg `n_components` is {}, should be set to `None` "
+        self.assertIsNone(value.getK(), msg=msg.format(value.getK()))
+
+        # -> Arg `InputCol` should be set to `_INPUT_COL`
+        msg = "Error in init `Pca` object (spark), arg `InputCol` is {}, expected `{}`"
+        self.assertEqual(value.getInputCol(), _INPUT_COL,
+                         msg=msg.format(value.getInputCol(), _INPUT_COL))
+
+        # -> Arg `OutputCol` should be set to `_OUTPUT_COL`
+        msg = "Error in init `Pca` object (spark), arg `OutputCol` is {}, expected `{}`"
+        self.assertEqual(value.getOutputCol(), _OUTPUT_COL,
+                         msg=msg.format(value.getOutputCol(), _OUTPUT_COL))
+
+    def test_format_table(self):
+        """
+        Testing function `_format_table`
+        """
+        pass
+    
+    def test_arguments_pca_ts_list(self):
         """
         Testing behaviour when wrong arguments on function `pca_ts_list`.
         """
@@ -218,3 +280,21 @@ class TesScale(unittest.TestCase):
         finally:
             # Clean up database
             self.clean_up_db(tsuid_list)
+
+    def test_pca_values(self):
+        """
+        Testing the result values of the pca algorithm.
+        """
+        pass
+
+    def test_spark(self):
+        """
+        Testing the result values of the pca algorithm, when spark is forced true.
+        """
+        pass
+
+    def test_diff_spark(self):
+        """
+        Testing difference of result between "Spark" and "No Spark"
+        """
+        pass
