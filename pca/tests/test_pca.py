@@ -24,10 +24,12 @@ from collections import defaultdict
 # Core code
 from ikats.algo.pca.pca import pca_ts_list, Pca, SEED, _INPUT_COL, _OUTPUT_COL, _format_table
 from ikats.core.resource.api import IkatsApi
+from ikats.core.resource.client import ServerError
 
 # sklearn
 import sklearn.decomposition
-
+# Center / scale values
+from sklearn.preprocessing import StandardScaler
 # pyspark
 import pyspark.ml.feature
 
@@ -63,8 +65,12 @@ def gen_ts(ts_id):
     :param ts_id: Identifier of the TS to generate (see content below for the structure)
     :type ts_id: int
 
-    :return: the TSUID, funcId and all expected result (one per scaling)
-    :rtype: dict
+    :return: Tuple composed by:
+        * the TSUID, funcId and all expected result (one per scaling)
+        * the number of timestamp of the dataset
+    :rtypes:
+        * dict
+        * int
     """
 
     # Build TS identifier
@@ -73,20 +79,44 @@ def gen_ts(ts_id):
     # 1/ Choose test case
     # ----------------------------------------------------------------
     if ts_id == 1:
-        # CASE: Use 2 TS nearly identical (same mean, min, max, sd)
-        time = list(range(14879030000, 14879039000, 1000))
-        value1 = [2.3, 3.3, 4.4, 9.9, 0.1, -1.2, -12.13, 20.6, 0.0]
-        value2 = [0.0, 2.3, 3.3, 4.4, 9.9, 0.1, -1.2, -12.13, 20.6]
+        # CASE: Very simple dataset, already centered/scaled
 
-        ts_content = np.array([np.array([time, value1]).T,
-                              np.array([time, value2]).T],
-                              np.float64)
-        # Shape = (n_ts, n_row, 2), where n_row = n_times
+        # Number of times
+        n_times = 5
+        # Get timestamps
+        time = list(range(14879030000, 14879030000 + (n_times * 1000), 1000))
+
+        # Get values
+        value = np.array([[1., 2., 3., 4., 4.],
+                 [4, 5., 6., 7., 7.],
+                 [7., 8., 9., 10., 10.],
+                 [4., 3., 2., 1., 1.]])
+        # shape = (n_ts, n_times)
+
+        # Perform scaling (scale/center)
+        scaler = StandardScaler()
+        value = scaler.fit_transform(value)
+
+        # [[-1.41421356, -1.09108945, -0.73029674, -0.4472136 ],
+        # [ 0.        ,  0.21821789,  0.36514837,  0.4472136 ],
+        # [ 1.41421356,  1.52752523,  1.46059349,  1.34164079],
+        # [ 0.        , -0.65465367, -1.09544512, -1.34164079]]
 
     else:
         raise NotImplementedError
 
-    # 2/ Build result
+    # 2/ Build TS data
+    # ----------------------------------------------------------------
+    ts_content = []
+
+    # Add time iteratively to each ts
+    for ts in value:
+        ts_content.append(np.array([time, ts]).T)
+
+    ts_content = np.array(ts_content)
+    # ts_content.shape = (n_ts, n_times, 2)
+
+    # 3/ Build result
     # ----------------------------------------------------------------
     # Create the time series, build custom meta, and add into result
     result = []
@@ -108,7 +138,7 @@ def gen_ts(ts_id):
             raise SystemError("Error while creating TS %s" % ts_id)
 
         # Generate metadata (`qual_nb_points`, `metric`, `funcId`
-        # NO PERIODnt_
+        # NO PERIOD
         IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="qual_nb_points", value=ts_content.shape[1], force_update=True)
         IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="metric", value="metric_%s" % ts_id, force_update=True)
         IkatsApi.md.create(tsuid=current_ts_created['tsuid'], name="funcId", value=current_fid, force_update=True)
@@ -117,7 +147,7 @@ def gen_ts(ts_id):
         result.append({"tsuid": current_ts_created["tsuid"],
                        "funcId": current_ts_created["funcId"]})
 
-    return result
+    return result, n_times
 
 
 class TesScale(unittest.TestCase):
@@ -212,10 +242,10 @@ class TesScale(unittest.TestCase):
         ..Note: All Errors raised are `TypeError` (easier to test)
         """
         # ----------------------------------------------------
-        # 1/ Test global type (dict)
+        # 1/ Test global type (defaultdict or dict)
         # ----------------------------------------------------
-        msg = "Arg. `arg_to_test` have type {}, expected `defaultdict`"
-        if type(arg_to_test) is not defaultdict:
+        msg = "Arg. `arg_to_test` have type {}, expected `defaultdict` or `dict`"
+        if (type(arg_to_test) is not defaultdict) and (type(arg_to_test) is not dict):
             raise TypeError(msg.format(type(arg_to_test)))
 
         #
@@ -336,7 +366,7 @@ class TesScale(unittest.TestCase):
         """
 
         # Get the TSUID of the saved TS
-        tsuid_list = gen_ts(1)
+        tsuid_list, _ = gen_ts(1)
 
         try:
 
@@ -384,6 +414,12 @@ class TesScale(unittest.TestCase):
                 # noinspection PyTypeChecker
                 pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern="a", table_name=2)
 
+            # wrong regexp
+            msg = "Testing arguments : Error in testing `table_name` regexp"
+            with self.assertRaises(ValueError, msg=msg):
+                # noinspection PyTypeChecker
+                pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern="a", table_name="a b ")
+
             # nb_points_by_chunk
             # ----------------------------
             # Wrong type (not int)
@@ -427,13 +463,124 @@ class TesScale(unittest.TestCase):
         """
         Testing the result values of the pca algorithm.
         """
-        pass
+        # Get the TSUID of the saved TS
+        try:
+            IkatsApi.table.delete("Variance_explained_PCA")
+        # Except: if the table do NOT already exist
+        except ServerError:
+            pass
+        finally:
+            tsuid_list, n_times = gen_ts(1)
 
+        try:
+            # Number of Principal component to build
+            n_components = 2
+            # perform pca (arg `Spark` forced to `False` for testing NO SPARK mode)
+            result_tslist, result_table_name = pca_ts_list(ts_list=tsuid_list,
+                                                           n_components=n_components,
+                                                           fid_pattern="PC{pc_id}",
+                                                           table_name="Variance_explained_PCA",
+                                                           spark=False)
+
+            # 1/ Test output type
+            # ---------------------------------------------
+            # Check type of `result_tslist` (list)
+            msg = "Error, `result_tslist` have type {}, expected `list`"
+            self.assertTrue(type(result_tslist) is list, msg=msg.format(type(result_tslist)))
+
+            # Check type of `result_table_name` (str)
+            msg = "Error, `result_table_name` have type {}, expected `str`"
+            self.assertTrue(type(result_table_name) is str, msg=msg.format(type(result_table_name)))
+
+            # Check type of table from `result_table_name` (table)
+            self.check_type_table(IkatsApi.table.read(result_table_name))
+
+            # 2/ Test outputs values (TS transformed)
+            # ---------------------------------------------
+            # Get the resulted tsuid
+            result_tsuid = [x['tsuid'] for x in result_tslist]
+
+            # read TS
+            #  List of TS [ [[time1, value1], [time2, value2],...] ]
+            result_values = IkatsApi.ts.read(result_tsuid)
+
+            # Test shape of result
+            msg = "Error in result shape, get {}, expected {}"
+            expected = (n_components, n_times, 2)
+
+            self.assertTupleEqual(np.array(result_values).shape, expected,
+                                  msg=msg.format(np.array(result_values), expected))
+
+            # 3/ Clean TS list created / table created
+            # ---------------------------------------------
+            self.clean_up_db(result_tslist)
+            IkatsApi.table.delete(result_table_name)
+
+        finally:
+            # Clean up database
+            self.clean_up_db(tsuid_list)
+
+    @unittest.skip
     def test_spark(self):
         """
-        Testing the result values of the pca algorithm, when spark is forced true.
-        """
-        pass
+          Testing the result values of the pca algorithm.
+          """
+        # Get the TSUID of the saved TS
+        try:
+            IkatsApi.table.delete("Variance_explained_PCA")
+        # Except: if the table do NOT already exist
+        except ServerError:
+            pass
+        finally:
+            tsuid_list, n_times = gen_ts(1)
+
+        try:
+            # Number of Principal component to build
+            n_components = 2
+            # perform pca (arg `Spark` forced to `False` for testing NO SPARK mode)
+            result_tslist, result_table_name = pca_ts_list(ts_list=tsuid_list,
+                                                           n_components=n_components,
+                                                           fid_pattern="PC{pc_id}",
+                                                           table_name="Variance_explained_PCA",
+                                                           spark=False)
+
+            # 1/ Test output type
+            # ---------------------------------------------
+            # Check type of `result_tslist` (list)
+            msg = "Error, `result_tslist` have type {}, expected `list`"
+            self.assertTrue(type(result_tslist) is list, msg=msg.format(type(result_tslist)))
+
+            # Check type of `result_table_name` (str)
+            msg = "Error, `result_table_name` have type {}, expected `str`"
+            self.assertTrue(type(result_table_name) is str, msg=msg.format(type(result_table_name)))
+
+            # Check type of table from `result_table_name` (table)
+            self.check_type_table(IkatsApi.table.read(result_table_name))
+
+            # 2/ Test outputs values (TS transformed)
+            # ---------------------------------------------
+            # Get the resulted tsuid
+            result_tsuid = [x['tsuid'] for x in result_tslist]
+
+            # read TS
+            #  List of TS [ [[time1, value1], [time2, value2],...] ]
+            result_values = IkatsApi.ts.read(result_tsuid)
+
+            # Test shape of result
+            msg = "Error in result shape, get {}, expected {}"
+            expected = (n_components, n_times, 2)
+
+            self.assertTupleEqual(np.array(result_values).shape, expected,
+                                  msg=msg.format(np.array(result_values), expected))
+
+            # 3/ Clean TS list created / table created
+            # ---------------------------------------------
+            self.clean_up_db(result_tslist)
+            IkatsApi.table.delete(result_table_name)
+
+        finally:
+            # Clean up database
+            self.clean_up_db(tsuid_list)
 
     def test_diff_spark(self):
         """
