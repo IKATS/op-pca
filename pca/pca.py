@@ -25,6 +25,7 @@ import re
 import pyspark.ml.feature
 
 from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.linalg import Vectors
 from pyspark.sql.functions import udf
 from pyspark.sql.types import DoubleType
 
@@ -165,7 +166,72 @@ class Pca(object):
             return self.pca.fit_transform(x)
 
 
-def spark_pca(ts_list,
+def _check_alignement(tsuid_list):
+    """
+    Check the alignement of the provided list of TS (`tsuid_list`).
+
+    :param tsuid_list: List of tsuid of TS to check
+    :type tsuid_list: List of str
+    ..Example: ['tsuid1', 'tsuid2', ...]
+
+    :raises:
+    * ValueError: TS are not aligned
+    * ValueError: Some metadata are missing (start date, end date, nb points)
+
+    ..Note: First TS is the reference. Indeed, ALL TS must be aligned (so aligned to the first TS)
+    """
+    # Read metadata
+    meta_list = IkatsApi.md.read(tsuid_list)
+
+    # Perform operation iteratively on each TS
+    for tsuid in tsuid_list:
+
+        # 1/ Retrieve meta data and check available meta-data
+        # --------------------------------------------------------------------------
+        md = meta_list[tsuid]
+
+        # CASE 1: no md (sd, ed, nb_point) -> raise ValueError
+        if 'ikats_start_date' not in md.keys() and \
+                'ikats_end_date' not in md.keys() and \
+                'qual_nb_points' not in md.keys():
+            raise ValueError("No MetaData associated with tsuid {}... Is it an existing TS ?".format(tsuid))
+        # CASE 2: If `period` is not calculated -> calculate it manually
+        elif 'qual_ref_period' not in md.keys():
+            sd = int(md['ikats_start_date'])
+            ed = int(md['ikats_end_date'])
+            nb_points = int(md['qual_nb_points'])
+            period = int((ed - sd) / (nb_points - 1))
+        # CASE 3: OK (metadata `period` available...) -> continue
+        else:
+            period = int(float(md['qual_ref_period']))
+            sd = int(md['ikats_start_date'])
+            ed = int(md['ikats_end_date'])
+
+        # 2/ Check if data are aligned (same sd, ed, period)
+        # --------------------------------------------------------------------------
+        # CASE 1: First TS -> get as reference
+        if tsuid == tsuid_list[0]:
+            ref_sd = sd
+            ref_ed = ed
+            ref_period = period
+
+        # CASE 2: Other TS -> compared to the reference
+        else:
+            # Compare `sd`
+            if sd != ref_sd:
+                raise ValueError("TS {}, metadata `start_date` is {}:"
+                                 " not aligned with other TS (expected {})".format(tsuid, sd, ref_sd))
+            # Compare `ed` (not necessary)
+            elif ed != ref_ed:
+                raise ValueError("TS {}, metadata `end_date` is {}:"
+                                 " not aligned with other TS (expected {})".format(tsuid, ed, ref_ed))
+            # Compare `period`
+            elif period != ref_period:
+                    raise ValueError("TS {}, metadata `ref_period` is {}:"
+                                     " not aligned with other TS (expected {})".format(tsuid, ed, ref_period))
+
+
+def spark_pca(tsuid_list,
               fid_pattern,
               n_components,
               table_name,
@@ -173,9 +239,9 @@ def spark_pca(ts_list,
     """
     Compute a PCA on a provided ts list ("spark" mode).
 
-    :param ts_list: List of TS to scale
-    :type ts_list: List of dict
-    ..Example: [ {'tsuid': tsuid1, 'funcId' funcId1}, ...]
+    :param tsuid_list: List of tsuid of TS to scale
+    :type tsuid_list: List of str
+    ..Example: ['tsuid1', 'tsuid2', ...]
 
     :param fid_pattern: pattern used to name the FID of the output TSUID.
            {pc_id} will be replaced by the id of the current principal component
@@ -192,25 +258,40 @@ def spark_pca(ts_list,
     :type nb_points_by_chunk: int
 
     :returns:two objects:
-        * ts_list : A list of dict composed by original TSUID and the information about the new TS
+        * tsuid_list : A list of dict composed by original TSUID and the information about the new TS
         * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
         * str
+
+    :raises:
+        * ValueError: If one of the input TS have no metadata start date, or end date, or nb_point
+
     """
-    pass
+    # 0/ Init Pca object
+    # ------------------------------------------------
+    # Init object
+    current_pca = Pca(n_components=n_components, spark=True)
+
+    # 1/ Test alignment of the data
+    # ------------------------------------------------
+    _check_alignement(tsuid_list)
+
+    # 2/ Get data
+    # ------------------------------------------------
     # TODO: assembler les colonnes en une seule, en utilisant VectorAsssembler
     # Indeed: PCA requires a Vector column as an input.
     # You have to assemble your data first.
+    pass
 
 
-def pca(ts_list, fid_pattern, n_components, table_name):
+def pca(tsuid_list, fid_pattern, n_components, table_name):
     """
     Compute a PCA on a provided ts list ("no spark" mode).
 
-    :param ts_list: List of TS to scale
-    :type ts_list: List of dict
-    ..Example: [ {'tsuid': tsuid1, 'funcId' funcId1}, ...]
+    :param tsuid_list: List of tsuid of TS to scale
+    :type tsuid_list: List of str
+    ..Example: ['tsuid1', 'tsuid2', ...]
 
     :param fid_pattern: pattern used to name the FID of the output TSUID.
            {pc_id} will be replaced by the id of the current principal component
@@ -223,7 +304,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     :type table_name: str
 
     :returns:two objects:
-        * ts_list : A list of dict composed by original TSUID and the information about the new TS
+        * tsuid_list : A list of dict composed by original TSUID and the information about the new TS
         * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
@@ -235,7 +316,11 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     # Init object
     current_pca = Pca(n_components=n_components, spark=False)
 
-    # 1/ Build input
+    # 1/ Test alignment of the data
+    # ------------------------------------------------
+    _check_alignement(tsuid_list)
+
+    # 2/ Build input
     # ------------------------------------------------
     # Need to build an array containing data only (the timestamps are NOT transformed by PCA)
     # -> data must be aligned
@@ -243,16 +328,16 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     start_loading_time = time.time()
 
     # Get timestamps from THE FIRST TS
-    timestamps = IkatsApi.ts.read(ts_list[0])[0][:, 0]
+    timestamps = IkatsApi.ts.read(tsuid_list[0])[0][:, 0]
 
     # Read data from each TS (data only, NO timestamps -> `[:, 1]`)
     # Transpose data for correct format: nrow=n_times, n_col=n_TS
-    ts_data = np.array([IkatsApi.ts.read(ts)[0][:, 1] for ts in ts_list]).T
+    ts_data = np.array([IkatsApi.ts.read(ts)[0][:, 1] for ts in tsuid_list]).T
     # Shape = (n_times, n_ts)
 
     LOGGER.debug("Gathering time: %.3f seconds", time.time() - start_loading_time)
 
-    # 2/ Perform PCA
+    # 3/ Perform PCA
     # ------------------------------------------------
     start_computing_time = time.time()
 
@@ -262,7 +347,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
 
     LOGGER.debug("Computing time: %.3f seconds", time.time() - start_computing_time)
 
-    # 3/ Save transformed TS list
+    # 4/ Save transformed TS list
     # ------------------------------------------------
     fid_pattern = fid_pattern.replace("{pc_id}", "{}")  # remove `pc_id` from `fid_pattern`
 
@@ -282,7 +367,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
         result = np.array([timestamps, data]).T
         # Shape = (n_times, 2)
 
-        # 1/ Generate new FID
+        # 4.1/ Generate new FID
         # -------------------------------
         # Add id of current PC (in 1..k), `fid_pattern` contains str '{}'
         new_fid = fid_pattern.format(PCId)
@@ -295,7 +380,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
             new_fid = '%s_%s' % (new_fid, int(time.time() * 1000))
             IkatsApi.ts.create_ref(new_fid)
 
-        # 2/ Import time series result in database
+        # 4.2/ Import time series result in database
         # -------------------------------
         try:
             res_import = IkatsApi.ts.create(fid=new_fid,
@@ -319,13 +404,13 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     start_saving_time = time.time()
 
     result1 = [__save_ts(data=transformed_data[:, i],
-                         original_tsuid=ts_list[i],
+                         original_tsuid=tsuid_list[i],
                          PCId=i+1  # pc from 1 to n_components + 1 (more readable for user)
                          ) for i in range(transformed_data.shape[1])]
 
     LOGGER.debug("Result import time: %.3f seconds", time.time() - start_saving_time)
 
-    # 4/ Explained variance result (table)
+    # 5/ Explained variance result (table)
     # ------------------------------------------------
     # Function should return table containing:
     # * List of PC ('PC1', ... 'PCk'), where k = n_components + 1 -> row names
@@ -350,7 +435,7 @@ def pca(ts_list, fid_pattern, n_components, table_name):
     # Save the table
     IkatsApi.table.create(data=result2)
 
-    # 5/ Build final result
+    # 6/ Build final result
     # ------------------------------------------------
     return result1, table_name
 
@@ -396,7 +481,7 @@ def pca_ts_list(ts_list,
     :type spark: bool or NoneType
 
     :returns:two objects:
-        * ts_list : A list of dict composed by original TSUID and the information about the new TS
+        * tsuid_list : A list of dict composed by original TSUID and the information about the new TS
         * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
@@ -465,9 +550,9 @@ def pca_ts_list(ts_list,
                                                                         nb_points_by_chunk=nb_points_by_chunk)):
         # Arg `spark=True`: spark usage forced
         # Arg `spark=None`: Check using criteria (nb_points and number of ts)
-        return spark_pca(ts_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components,table_name=table_name, nb_points_by_chunk=nb_points_by_chunk)
+        return spark_pca(tsuid_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components,table_name=table_name, nb_points_by_chunk=nb_points_by_chunk)
     else:
-        return pca(ts_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components, table_name=table_name)
+        return pca(tsuid_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components, table_name=table_name)
 
 
 def _format_table(matrix, rownames, table_name,

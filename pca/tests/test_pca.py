@@ -47,7 +47,9 @@ LOGGER.addHandler(STREAM_HANDLER)
 # All use case tested during this script.
 # Keys are argument `ts_id` of function `gen_ts`
 USE_CASE = {
-    1: "2 TS"
+    1: "2 TS",
+    2: "2 TS with no same start/end date",
+    3: "2 TS with no same period"
 }
 
 # TOLERANCE for tests: we assume that this tol is acceptable
@@ -84,7 +86,7 @@ def gen_ts(ts_id):
         # Number of times
         n_times = 5
         # Get timestamps
-        time = list(range(14879030000, 14879030000 + (n_times * 1000), 1000))
+        time = np.arange(14879030000, 14879030000 + (n_times * 1000), 1000)
 
         # Get values
         value = np.array([[1., 2., 3., 4., 4.],
@@ -102,21 +104,69 @@ def gen_ts(ts_id):
         # [ 1.41421356,  1.52752523,  1.46059349,  1.34164079],
         # [ 0.        , -0.65465367, -1.09544512, -1.34164079]]
 
+        # Build TS data
+        # ---------------
+        ts_content = []
+
+        # Add time iteratively to each ts
+        for ts in value:
+            ts_content.append(np.array([time, ts]).T)
+
+        ts_content = np.array(ts_content)
+        # ts_content.shape = (n_ts, n_times, 2) = (4, 5, 2)
+
+    elif ts_id == 2:
+        # CASE: 2 TS not aligned : not the same start date
+
+        # Number of times
+        n_times = 5
+
+        # Get timestamps
+        # ---------------
+        # Gap between the 2 TS
+        gap = 1000
+
+        time1 = list(range(14879030000 + gap, 14879030000 + gap + (n_times * 1000), 1000))
+        time2 = list(range(14879030000, 14879030000 + (n_times * 1000), 1000))
+
+        # Get values
+        value = [1., 2., 3., 4., 4.]
+        # shape = (n_ts, n_times)
+
+        # Build TS data
+        # ---------------
+        ts_content = np.array([np.array([time1, value]).T,
+                               np.array([time2, value]).T])
+        # ts_content.shape = (n_ts, n_times, 2) = (2, 5, 2)
+
+    elif ts_id == 3:
+        # CASE: 2 TS not aligned : not the period
+
+        # Number of times
+        n_times = 5
+
+        # Get timestamps
+        # ---------------
+        # Gap between the 2 TS
+        gap = 10
+
+        time1 = list(range(14879030000, 14879030000 + (n_times * (1000 + gap)), 1000 + gap))
+        time2 = list(range(14879030000, 14879030000 + (n_times * 1000), 1000))
+
+        # Get values
+        value = [1., 2., 3., 4., 4.]
+        # shape = (n_ts, n_times)
+
+        # Build TS data
+        # ---------------
+        ts_content = np.array([np.array([time1, value]).T,
+                               np.array([time2, value]).T])
+        # ts_content.shape = (n_ts, n_times, 2) = (2, 5, 2)
+
     else:
         raise NotImplementedError
 
-    # 2/ Build TS data
-    # ----------------------------------------------------------------
-    ts_content = []
-
-    # Add time iteratively to each ts
-    for ts in value:
-        ts_content.append(np.array([time, ts]).T)
-
-    ts_content = np.array(ts_content)
-    # ts_content.shape = (n_ts, n_times, 2)
-
-    # 3/ Build result
+    # 2/ Build result
     # ----------------------------------------------------------------
     # Create the time series, build custom meta, and add into result
     result = []
@@ -459,6 +509,24 @@ class TesScale(unittest.TestCase):
             # Clean up database
             self.clean_up_db(tsuid_list)
 
+    def test_non_aligned_ts(self):
+        """
+        Test functions when TS are not aligned (not same start/end date or period)
+        """
+        for case in [2, 3]:
+            # Case 2: Not the same `start date`
+            # Case 3: Not the same `period`
+            # ----------------------------------------------------
+            ts_list, _ = gen_ts(case)
+
+            msg = "Error in testing case {}: {}; on {} mode."
+            # Test on spark mode
+            with self.assertRaises(ValueError, msg=msg.format(case, USE_CASE[case], "NO SPARK")):
+                pca_ts_list(ts_list=ts_list, spark=False)
+            # Test on NO spark mode
+            with self.assertRaises(ValueError, msg=msg.format(case, USE_CASE[case], "SPARK")):
+                pca_ts_list(ts_list=ts_list, spark=True)
+
     def test_pca_values(self):
         """
         Testing the result values of the pca algorithm.
@@ -476,7 +544,8 @@ class TesScale(unittest.TestCase):
             # Number of Principal component to build
             n_components = 2
             # perform pca (arg `Spark` forced to `False` for testing NO SPARK mode)
-            result_tslist, result_table_name = pca_ts_list(ts_list=tsuid_list,
+            result_tslist, result_table_name = pca_ts_list\
+                (ts_list=tsuid_list,
                                                            n_components=n_components,
                                                            fid_pattern="PC{pc_id}",
                                                            table_name="Variance_explained_PCA",
