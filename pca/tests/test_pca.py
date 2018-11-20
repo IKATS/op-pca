@@ -18,36 +18,36 @@ limitations under the License.
 
 import logging
 import unittest
-import numpy as np
 from collections import defaultdict
+
+import numpy as np
+# pyspark
+import pyspark.ml.feature
+# sklearn
+import sklearn.decomposition
+# Center / scale values
+from sklearn.preprocessing import StandardScaler
 
 # Core code
 from ikats.algo.pca.pca import pca_ts_list, Pca, SEED, _INPUT_COL, _OUTPUT_COL, _format_table
 from ikats.core.resource.api import IkatsApi
 from ikats.core.resource.client import ServerError
 
-# sklearn
-import sklearn.decomposition
-# Center / scale values
-from sklearn.preprocessing import StandardScaler
-# pyspark
-import pyspark.ml.feature
-
 # Set LOGGER
 LOGGER = logging.getLogger()
 # Log format
-LOGGER.setLevel(logging.DEBUG)
+LOGGER.setLevel(logging.INFO)#DEBUG)
 FORMATTER = logging.Formatter('%(asctime)s:%(levelname)s:%(funcName)s:%(message)s')
 # Create another handler that will redirect log entries to STDOUT
 STREAM_HANDLER = logging.StreamHandler()
-STREAM_HANDLER.setLevel(logging.DEBUG)
+STREAM_HANDLER.setLevel(logging.INFO)#DEBUG)
 STREAM_HANDLER.setFormatter(FORMATTER)
 LOGGER.addHandler(STREAM_HANDLER)
 
 # All use case tested during this script.
 # Keys are argument `ts_id` of function `gen_ts`
 USE_CASE = {
-    1: "2 TS",
+    1: "4 TS, 5 times, centered/scaled",
     2: "2 TS with no same start/end date",
     3: "2 TS with no same period"
 }
@@ -96,7 +96,7 @@ def gen_ts(ts_id):
         # shape = (n_ts, n_times)
 
         # Perform scaling (scale/center)
-        scaler = StandardScaler()
+        scaler = StandardScaler(with_mean=True, with_std=True)
         value = scaler.fit_transform(value)
 
         # [[-1.41421356, -1.09108945, -0.73029674, -0.4472136 ],
@@ -162,7 +162,6 @@ def gen_ts(ts_id):
         ts_content = np.array([np.array([time1, value]).T,
                                np.array([time2, value]).T])
         # ts_content.shape = (n_ts, n_times, 2) = (2, 5, 2)
-
     else:
         raise NotImplementedError
 
@@ -426,13 +425,13 @@ class TesScale(unittest.TestCase):
             msg = "Testing arguments : Error in testing `ts_list` type"
             with self.assertRaises(TypeError, msg=msg):
                 # noinspection PyTypeChecker
-                pca_ts_list(ts_list=0.5)
+                pca_ts_list(ts_list=0.5, n_components=2)
 
             # empty TS list
             msg = "Testing arguments : Error in testing `ts_list` as empty list"
             with self.assertRaises(ValueError, msg=msg):
                 # noinspection PyTypeChecker
-                pca_ts_list(ts_list=[])
+                pca_ts_list(ts_list=[], n_components=2)
 
             # n_components
             # ----------------------------
@@ -441,6 +440,12 @@ class TesScale(unittest.TestCase):
             with self.assertRaises(TypeError, msg=msg):
                 # noinspection PyTypeChecker
                 pca_ts_list(ts_list=tsuid_list, n_components="no")
+
+            # wrong type (None and not int)
+            msg = "Testing arguments : Error in testing `n_components` type"
+            with self.assertRaises(TypeError, msg=msg):
+                # noinspection PyTypeChecker
+                pca_ts_list(ts_list=tsuid_list, n_components=None)
 
             # Not > 0
             msg = "Testing arguments : Error in testing `n_components` negative value"
@@ -520,12 +525,12 @@ class TesScale(unittest.TestCase):
             ts_list, _ = gen_ts(case)
 
             msg = "Error in testing case {}: {}; on {} mode."
-            # Test on spark mode
-            with self.assertRaises(ValueError, msg=msg.format(case, USE_CASE[case], "NO SPARK")):
-                pca_ts_list(ts_list=ts_list, spark=False)
             # Test on NO spark mode
+            with self.assertRaises(ValueError, msg=msg.format(case, USE_CASE[case], "NO SPARK")):
+                pca_ts_list(ts_list=ts_list, n_components=2, spark=False)
+            # Test on spark mode
             with self.assertRaises(ValueError, msg=msg.format(case, USE_CASE[case], "SPARK")):
-                pca_ts_list(ts_list=ts_list, spark=True)
+                pca_ts_list(ts_list=ts_list, n_components=2, spark=True)
 
     def test_pca_values(self):
         """
@@ -544,12 +549,12 @@ class TesScale(unittest.TestCase):
             # Number of Principal component to build
             n_components = 2
             # perform pca (arg `Spark` forced to `False` for testing NO SPARK mode)
-            result_tslist, result_table_name = pca_ts_list\
+            result_tslist, result_table_name = pca_ts_list \
                 (ts_list=tsuid_list,
-                                                           n_components=n_components,
-                                                           fid_pattern="PC{pc_id}",
-                                                           table_name="Variance_explained_PCA",
-                                                           spark=False)
+                 n_components=n_components,
+                 fid_pattern="PC{pc_id}",
+                 table_name="Variance_explained_PCA",
+                 spark=False)
 
             # 1/ Test output type
             # ---------------------------------------------
@@ -589,7 +594,6 @@ class TesScale(unittest.TestCase):
             # Clean up database
             self.clean_up_db(tsuid_list)
 
-    @unittest.skip
     def test_spark(self):
         """
           Testing the result values of the pca algorithm.
@@ -651,8 +655,135 @@ class TesScale(unittest.TestCase):
             # Clean up database
             self.clean_up_db(tsuid_list)
 
+    # @unittest.skip
+    # FOR NOW, SPARK AND SKLEARN PRODUCE DIFFERENT RESULTS
     def test_diff_spark(self):
         """
         Testing difference of result between "Spark" and "No Spark"
         """
-        pass
+        # Arguments
+        n_components = 2
+        NB_POINTS_BY_CHUNK = 2
+        # Table names
+        table_spark = "Variance_explained_SPARK_PCA"
+        table_nospark = "Variance_explained_PCA"
+
+        # Get the TSUID of the saved TS
+        try:
+            IkatsApi.table.delete(table_spark)
+            IkatsApi.table.delete(table_nospark)
+        # Except: if the table do NOT already exist
+        except ServerError:
+            pass
+        finally:
+            # For each use case
+            for case in [1]:
+                # CASE 1: 4 TS, 5 times, scaled/centered
+
+                ts_list, n_times = gen_ts(case)
+
+                def __get_results(fid_pattern,
+                                  table_name,
+                                  spark,
+                                  ts_list=ts_list,
+                                  n_components=n_components,
+                                  nb_points_by_chunk=NB_POINTS_BY_CHUNK):
+                    """
+                    Generate result from function `pca_ts_list`.
+                    Same arg. than `pca_ts_list`.
+
+                    :return: Tuple composed by:
+                        * result_values: list of values [(time, values)...] (one list per TS) of the created PC
+                        * result_table: The created table containing variance explained
+                        * the list of ts created (for using `clean_up_db`)
+                    """
+                    # Perform pca, and get the resulting tsuid (force spark usage)
+                    result_ts_list, result_table = pca_ts_list(ts_list=ts_list,
+                                                               n_components=n_components,
+                                                               fid_pattern=fid_pattern,
+                                                               table_name=table_name,
+                                                               nb_points_by_chunk=nb_points_by_chunk,
+                                                               spark=spark)
+
+                    # Get the list of tsuid (ex: ['tsuid1', 'tsuid2', ...])
+                    result_tsuid = [x['tsuid'] for x in result_ts_list]
+
+                    # Get the TS values (ex: [ [[time1, value1], [time2, value2],...] ])
+                    result_values = np.array(IkatsApi.ts.read(result_tsuid))
+                    # Shape: (n_ts, n_times, 2)
+
+                    # Get the table of variance explained
+                    result_table = IkatsApi.table.read(result_table)
+
+                    return result_values, result_table, result_ts_list
+
+                try:
+                    # GET SPARK RESULT
+                    # ------------------------
+                    # Perform pca, and get the resulting tsuid (force spark usage)
+                    result_values_spark, result_table_spark, result_tslist_spark = __get_results(fid_pattern="UNIT_TEST_SPARK_PC{pc_id}",
+                                                                                                 table_name=table_spark,
+                                                                                                 spark=True)
+
+                    # GET NO SPARK RESULT
+                    # ------------------------
+                    result_values_nospark, result_table_nospark, result_tslist = __get_results(fid_pattern="UNIT_TEST_PC{pc_id}",
+                                                                                               table_name=table_nospark,
+                                                                                               spark=False)
+
+                    # COMPARE TABLE OF VAR EXPLAINED
+                    # -------------------------------
+                    # Just test the content of the tables (each key is already checked)
+                    result_table_nospark = np.array(result_table_nospark['content']['cells']).flatten()
+                    result_table_spark = np.array(result_table_spark['content']['cells']).flatten()
+
+                    msg = "Error in compare Spark/no spark: variance explained case {} ({}) \n" \
+                          "Result Spark: {} \n" \
+                          "Result no spark {}.\n" \
+                          "Difference: {}".format(case,
+                                                  USE_CASE[case],
+                                                  result_table_spark,
+                                                  result_table_spark,
+                                                  np.subtract(result_table_nospark, result_table_spark))
+                    self.assertTrue(np.allclose(result_table_nospark, result_table_spark,
+                                                atol=tolerance), msg=msg)
+
+                    # For each ts result
+                    for ts in range(len(result_values_spark)):
+                        # GET SPARK VALUES
+                        # ------------------------
+                        # Get column "Value"  ([:, 1])
+                        result_values_ts_spark = np.array(result_values_spark[ts][:, 1])
+
+                        # GET NO SPARK RESULT
+                        # ------------------------
+                        # Get column "Value"  ([:, 1])
+                        result_values_ts_nospark = np.array(result_values_nospark[ts][:, 1])
+
+                        # COMPARE VALUES OF PC
+                        # ------------------------
+                        msg = "Error in compare Spark/no spark: case {} ({}) \n" \
+                              "Result Spark: {} \n" \
+                              "Result no spark {}.\n" \
+                              "Difference: {}".format(case,
+                                                      USE_CASE[case],
+                                                      result_values_ts_spark,
+                                                      result_values_ts_nospark,
+                                                      np.subtract(result_values_ts_spark, result_values_ts_nospark))
+
+                        self.assertTrue(np.allclose(result_values_ts_spark, result_values_ts_nospark,
+                                                    atol=tolerance), msg=msg)
+
+                except Exception:
+                    raise
+
+                finally:
+                    # Delete generated TS (from function `gen_ts`)
+                    self.clean_up_db(ts_list)
+                    # Delete TS created by `pca_ts_list` function
+                    self.clean_up_db(result_tslist_spark)  # SPARK MODE
+                    self.clean_up_db(result_tslist)  # NO SPARK MODE
+                    # Delete tables containing variance explained
+                    IkatsApi.table.delete(result_table_spark)  # SPARK MODE
+                    IkatsApi.table.delete(result_table_nospark)  # NO SPARK MODE
+

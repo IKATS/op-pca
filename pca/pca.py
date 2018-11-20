@@ -307,7 +307,7 @@ def spark_pca(tsuid_list,
     :type fid_pattern: str
 
     :param n_components: Number of principal components to keep.
-    :type n_components: NoneType or int
+    :type n_components: int
 
     :param table_name: Name of the created table (containing explained variance)
     :type table_name: str
@@ -513,7 +513,10 @@ def spark_pca(tsuid_list,
 
         # 5/ Get the table of variance explained
         # ------------------------------------------------
+        # try:
         current_pca.table_variance_explained(table_name=table_name)
+        # Table already exist
+        # except IkatsConflictError:
 
         # 6/ Save result
         # ------------------------------------------------
@@ -545,10 +548,21 @@ def spark_pca(tsuid_list,
             # 2/ Save each PC (column)
             # ------------------------------
             for pc in list_col:
-                # Associate keyword `pc` (ex: "1") to the `fid_pattern` (ex: "PC_1")
-                # Choose the fid (name) of the TS to save
+                # 3/ Generate new FID
+                # -------------------------------
+                # Add id of current PC (in 1..k), `fid_pattern` contains str '{}'
                 current_fid = fid_pattern.format(pc)
+                # Example: "PORTFOLIO_pc1"
+                try:
+                    IkatsApi.ts.create_ref(current_fid)
+                # Exception: if fid already exist
+                except IkatsConflictError:
+                    # TS already exist, append timestamp to be unique
+                    current_fid = '%s_%s' % (current_fid, int(time.time() * 1000))
+                    IkatsApi.ts.create_ref(current_fid)
 
+                # 4/ Save Data
+                # -------------------------------
                 # OPERATION: Import result by partition into database, and collect
                 # INPUT: [Timestamp, 1] (col "1": correspond to first PC)
                 # OUTPUT: the new tsuid of the scaled ts (not used)
@@ -558,40 +572,14 @@ def spark_pca(tsuid_list,
                     mapPartitions(lambda x: SparkUtils.save_data(fid=current_fid, data=list(x)))\
                     .collect()
 
-                # Retrieve tsuid of the saved TS
+                # 5/ Retrieve tsuid of the saved TS
+                # -------------------------------
                 new_tsuid = IkatsApi.fid.tsuid(current_fid)
                 LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", current_fid, new_tsuid,
                              time.time() - start_saving_time)
 
-                # 3/ Save metadata
-                # ------------------------------
-                # store metadata ikats_start_date, ikats_end_date and qual_nb_points
-                if not IkatsApi.md.create(
-                        tsuid=new_tsuid,
-                        name='ikats_start_date',
-                        value=ref_sd,
-                        data_type=DTYPE.date,
-                        force_update=True):
-                    LOGGER.error("Metadata ikats_start_date couldn't be saved for TS %s", new_tsuid)
-
-                if not IkatsApi.md.create(
-                        tsuid=new_tsuid,
-                        name='ikats_end_date',
-                        value=ref_ed,
-                        data_type=DTYPE.date,
-                        force_update=True):
-                    LOGGER.error("Metadata ikats_end_date couldn't be saved for TS %s", new_tsuid)
-
-                # Retrieve imported number of points from database
-                qual_nb_points = IkatsApi.ts.nb_points(tsuid=new_tsuid)
-                if not IkatsApi.md.create(
-                        tsuid=new_tsuid,
-                        name='qual_nb_points',
-                        value=qual_nb_points,
-                        data_type=DTYPE.number,
-                        force_update=True):
-                    LOGGER.error("Metadata qual_nb_points couldn't be saved for TS %s", new_tsuid)
-
+                # 6/ Update results
+                # -------------------------------
                 result.append({
                     "tsuid": new_tsuid,
                     "funcId": current_fid
@@ -628,7 +616,7 @@ def pca(tsuid_list, fid_pattern, n_components, table_name):
     :type fid_pattern: str
 
     :param n_components: Number of principal components to keep.
-    :type n_components: NoneType or int
+    :type n_components: int
 
     :param table_name: Name of the created table (containing explained variance)
     :type table_name: str
@@ -745,7 +733,7 @@ def pca(tsuid_list, fid_pattern, n_components, table_name):
 
 
 def pca_ts_list(ts_list,
-                n_components=None,
+                n_components,
                 fid_pattern="PC{pc_id}",
                 table_name="Variance_explained_PCA",
                 nb_points_by_chunk=NB_POINTS_BY_CHUNK,
@@ -814,10 +802,10 @@ def pca_ts_list(ts_list,
     except Exception:
         raise ValueError("Impossible to get tsuid list...")
 
-    # n_components (positive int or None)
-    if type(n_components) is not int and n_components is not None:
+    # n_components (positive int)
+    if type(n_components) is not int:
         raise TypeError("Arg. type `n_components` is {}, expected `int`".format(type(n_components)))
-    if n_components is not None and n_components < 1:
+    if n_components < 1:
         raise ValueError("Arg. `n_components` must be an integer > 1 (or None), get {}".format(n_components))
 
     # fid_pattern (str)
