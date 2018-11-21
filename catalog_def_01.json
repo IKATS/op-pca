@@ -1,0 +1,50 @@
+{  
+  "name":"pca",
+  "label":"PCA",
+  "description":"The implementation of the principal component analysis, for feature reduction",
+  "family":"Preprocessing_TS__Reduction",
+  "entry_point":"pca.pca::pca_ts_list",
+  "inputs":[  
+    {  
+      "name":"ts_list",
+      "label":"TS list",
+      "description":"The list of TS to reduce. TS must be aligned !",
+      "type":"ts_list"
+    }
+  ],
+  "parameters":[  
+    {  
+      "name":"n_components",
+      "label":"Number of components",
+      "description":"Number of principal components to keep",
+      "type":"number"
+    },
+    {  
+      "name":"fid_pattern",
+      "description":"Python pattern determining format of output functional identifiers. Example : PC_{pc_id}, where '{pc_id}' is the id of the principal component created (from 1 to n component)",
+      "type":"text",
+      "label":"FuncId pattern",
+      "default_value":"PC{pc_id}"
+    },
+    {  
+      "name":"table_name",
+      "description":"Name of the table to create (contains variance explained)",
+      "type":"text",
+      "label":"Table name"
+    }
+  ],
+  "outputs":[  
+    {  
+      "name":"ts_list",
+      "label":"TS list",
+      "description":"TS list resulting from a PCA operation (reduction) on the inputed ts_list. Produce `n_components` TS, with the same number of points than input TS.",
+      "type":"ts_list"
+    },
+    {  
+      "name":"Variance explained table",
+      "label":"Table",
+      "description":"Table containing the variance explained, and the cumulative var. explained for each PC",
+      "type":"table"
+    }
+  ]
+}

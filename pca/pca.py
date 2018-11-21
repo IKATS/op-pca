@@ -21,40 +21,44 @@ from collections import defaultdict
 import numpy as np
 import re
 
-# All scalers used in case SPARK=True
-import pyspark.ml.feature
-
-from pyspark.ml.linalg import Vectors
-from pyspark.sql.functions import udf, col
-from pyspark.sql.types import ArrayType, DoubleType
-
-from pyspark.sql.types import Row
-from pyspark.sql import functions as F
-
-# All scalers used in case SPARK=False
+# Modules used in case SPARK=False
 import sklearn.decomposition
 
-# IKATS utils
-from ikats.core.library.exception import IkatsException, IkatsConflictError
+# Modules used in case SPARK=True
+import pyspark.ml.feature
+from pyspark.ml.linalg import Vectors
+from pyspark.sql.functions import udf, col
+from pyspark.sql.types import ArrayType, DoubleType, Row
+from pyspark.sql import functions as F
 
 # Spark utils
 from ikats.core.library.spark import SSessionManager, SparkUtils
 from ikats.core.resource.api import IkatsApi
-from ikats.core.resource.client.temporal_data_mgr import DTYPE
 
-# TODO: finir doc
-"""
-Principal component analysis (PCA) Algorithm: Feature reduction, using Singular 
-Value Decomposition (SVD).
-
-Must be performed on scaled values (Z-norm) for coherent results.
-Orthogolnal transformation
-Axis changes
-
-PC: principal components
+# IKATS utils
+from ikats.core.library.exception import IkatsException, IkatsConflictError
 
 """
+Principal component analysis (PCA) Algorithm: Feature reduction, using Singular Value Decomposition (SVD).
 
+Technical details: Build pertinent orthogonal axis from a provided data-set: the Principal Components (PC).
+It's a dimensional reduction operation.
+
+Purpose: 
+    * Clean a data-set (reduce noise)
+    * Better representation of the data (each PC represents a particular phenomenon)
+
+Remark:
+    * Should be performed on scaled values (Z-norm) for coherent results.
+
+Keywords:
+    * PCA: Principal Component Analysis
+    * PC: principal components: the new "Axis" created from initial data-set
+    * variance explained: "pertinence" (in %) of each PC (the first PC have a big % variance explained).
+"""
+
+# GLOBAL VARS
+# -------------------------------------------------
 # Define a logger for this operator
 LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +108,7 @@ class Pca(object):
         # CASE Spark=True (pyspark)
         # ----------------------------------
         if self.spark:
-            # Init SparkSession (necessary for init Spark Scaler)
+            # Init SparkSession (necessary for init Spark PCA)
             SSessionManager.get()
 
             # Init pyspark.ml.feature PCA object
@@ -117,9 +121,6 @@ class Pca(object):
             # Set input / output columns names (necessary for Spark functions)
             self.pca.setInputCol(_INPUT_COL)
             self.pca.setOutputCol(_OUTPUT_COL)
-
-        # Indeed: PCA requires a Vector column as an input.
-        # You have to assemble your data first.
 
         # CASE Spark=False (sklearn)
         # -----------------------------------
@@ -152,7 +153,7 @@ class Pca(object):
         :return: Object x scaled with `self.pca`
         :rtype: type(x)
 
-        ..Note: If SPARK MODE: create argument `self.model` containing result of `fit(X)`
+        ..Note: This function set `self.variance_explained` containing % variance explained per PC.
         """
         # CASE : Use spark = True: use pyspark
         # --------------------------------------------------------
@@ -162,17 +163,13 @@ class Pca(object):
 
             # Store variance explained
             self.variance_explained = np.array(model.explainedVariance)
-            # `self.variance_explained`: np.array of len (`n_component`)
+            # np.array of len (`n_component`)
 
             return model.transform(x)
 
         # CASE : Use spark = False: use sklearn
         # --------------------------------------------------------
         else:
-
-            # Particular cases (align behaviour on Spark results)
-            # -----------------------------------------------------
-            # TODO: conformer le comportement sklearn avec celui de spark
 
             # Perform PCA
             # -----------------------------------------------------
@@ -186,15 +183,16 @@ class Pca(object):
 
     def table_variance_explained(self, table_name):
         """
-        Get the table of variance explained.
+        Create the table of variance explained.
 
-        :param table_name:Name of the created table (containing explained variance)
+        :param table_name: Name of the created table (containing explained variance)
         :type table_name: str
 
         :return: Table containing
-        * List of PC ('PC1', ... 'PCk'), where k = n_components + 1 -> row names
-        * Explained variance per PC
-        * Cumulative explained variance per PC
+            * List of PC ('PC1', ... 'PCk'), where k = n_components + 1 -> row names
+            * Explained variance per PC -> column 1
+            * Cumulative explained variance per PC -> column 2
+        :rtype: dict
         """
         # 1/ Get raw data
         # -----------------------------------------------------
@@ -220,7 +218,7 @@ class Pca(object):
 
 def _check_alignement(tsuid_list):
     """
-    Check the alignement of the provided list of TS (`tsuid_list`).
+    Check the alignment of the provided list of TS (`tsuid_list`).
 
     :param tsuid_list: List of tsuid of TS to check
     :type tsuid_list: List of str
@@ -232,8 +230,8 @@ def _check_alignement(tsuid_list):
         * period (`qual_ref_period`, or calculation of period) (int)
 
     :raises:
-    * ValueError: TS are not aligned
-    * ValueError: Some metadata are missing (start date, end date, nb points)
+        * ValueError: TS are not aligned
+        * ValueError: Some metadata are missing (start date, end date, nb points)
 
     ..Note: First TS is the reference. Indeed, ALL TS must be aligned (so aligned to the first TS)
     """
@@ -342,7 +340,6 @@ def spark_pca(tsuid_list,
         def __extract_ts_list(tsuid_list):
             """
             Extract all TS in a single Spark DataFrame
-            :param tsuid_list:
 
             :return: Dataframe containing Timestamp, and one column of all values (as `Vector`)
 
@@ -370,7 +367,6 @@ def spark_pca(tsuid_list,
 
             # Duplicate `chunks` n_ts times (`len(tsuid_list)`) -> get the chunks of all TS
             # Format: [(tsuid, chunk_id, start_date, end_date), ...]
-            # TODO: ça marche mais c'est moche
             chunks = []
             # For each TS
             for ts in tsuid_list:
@@ -451,7 +447,6 @@ def spark_pca(tsuid_list,
 
         # 3/ Calculate PCA
         # -------------------------------
-        # TODO: supprimer ce commentaire ?
         # Input of PCA algo should be:
         # N times, M TS
         # +----------------------------------+
