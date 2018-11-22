@@ -26,17 +26,16 @@ import sklearn.decomposition
 
 # Modules used in case SPARK=True
 import pyspark.ml.feature
-from pyspark.ml.linalg import Vectors
 from pyspark.sql.functions import udf, col
-from pyspark.sql.types import ArrayType, DoubleType, Row
-from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, DoubleType
 
 # Spark utils
 from ikats.core.library.spark import SSessionManager, SparkUtils
 from ikats.core.resource.api import IkatsApi
 
 # IKATS utils
-from ikats.core.library.exception import IkatsException, IkatsConflictError
+from ikats.core.library.exception import IkatsException, IkatsConflictError, IkatsNotFoundError
+from ikats.core.resource.client.temporal_data_mgr import DTYPE
 
 """
 Principal component analysis (PCA) Algorithm: Feature reduction, using Singular Value Decomposition (SVD).
@@ -70,18 +69,13 @@ NB_POINTS_BY_CHUNK = 50000
 _INPUT_COL = "features"
 _OUTPUT_COL = "PCA_Features"
 
-# SEED
-SEED = 0
-# Set the seed: making results reproducible
-np.random.seed(SEED)
-
 
 class Pca(object):
     """
     Wrapper of sklearn / pyspark.ml PCA algo. Uniform the behaviour of sklearn / pyspark.ml.
     """
 
-    def __init__(self, n_components=None, spark=False):
+    def __init__(self, n_components=None, spark=False, seed=None):
         """
         Init `Pca` object.
 
@@ -90,18 +84,33 @@ class Pca(object):
 
         :param spark: Use spark (case True) or not. Default False.
         :type spark: Bool
+
+        :param seed: The seed used for SKLEARN init only. If None, the seed is generated inside sklearn implementation,
+        with `np.random`. Default None.
+        :type seed: int or NoneType
         """
+        # TODO: reformater la classe pour mettre dedant toutes les fonctions
+        # Store arguments
         self.spark = spark
 
         self.n_components = n_components
 
+        self.seed = seed
+
+        if self.seed is not None:
+            # Set the seed: making results reproducible
+            np.random.seed(self.seed)
+
         # Init `variance_explained`, should contain the list of explained variance (in %) per PC
         self.variance_explained = None
 
-        # Init self.pca
-        self._get_pca()
+        # Store model (from pyspark or sklearn)
+        self.model = None
 
-    def _get_pca(self):
+        # Init self.pca
+        self.pca = self._init_pca()
+
+    def _init_pca(self):
         """
         Init PCA. Note that if self.spark=True, function init a SSessionManager itself.
         """
@@ -112,34 +121,36 @@ class Pca(object):
             SSessionManager.get()
 
             # Init pyspark.ml.feature PCA object
-            self.pca = pyspark.ml.feature.PCA()
+            pca = pyspark.ml.feature.PCA()
 
             # Additional arguments to set
             # --------------------------------
             # Set n_components
-            self.pca.setK(self.n_components)
+            pca.setK(self.n_components)
             # Set input / output columns names (necessary for Spark functions)
-            self.pca.setInputCol(_INPUT_COL)
-            self.pca.setOutputCol(_OUTPUT_COL)
+            pca.setInputCol(_INPUT_COL)
+            pca.setOutputCol(_OUTPUT_COL)
 
         # CASE Spark=False (sklearn)
         # -----------------------------------
         else:
             # Init sklearn.decomposition pca object
-            self.pca = sklearn.decomposition.PCA()
+            pca = sklearn.decomposition.PCA()
 
             # Additional arguments to set
             # --------------------------------
             # Set n_components
-            self.pca.n_components = self.n_components
-            # Perform an inplace scaling (for performance)
-            self.pca.copy = False
-            # Seed
-            self.pca.random_state = SEED
+            pca.n_components = self.n_components
+            # Copy result for storing model
+            pca.copy = True
+            # Seed (default=None in sklearn.decomposition.PCA() )
+            pca.random_state = self.seed
+
+        return pca
 
     def perform_pca(self, x):
         """
-        Perform pca. This function replace:
+        Perform pca. This function replaces:
             - the sklearn's `fit_transform()`
             - the pyspark's `fit().transform()`
 
@@ -147,7 +158,7 @@ class Pca(object):
 
         :param x: The data to scale,
             * shape = (N, M) if np.array
-            * df containing at least column [_INPUT_COL] containing`vector` type if spark DataFrame
+            * df containing at least column [_INPUT_COL] containif sng`vector` type ipark DataFrame
         :type x: np.array or pyspark.sql.DataFrame
 
         :return: Object x scaled with `self.pca`
@@ -159,13 +170,13 @@ class Pca(object):
         # --------------------------------------------------------
         if self.spark:
             # Store model (for extracting variance explained)
-            model = self.pca.fit(x)
+            self.model = self.pca.fit(x)
 
             # Store variance explained
-            self.variance_explained = np.array(model.explainedVariance)
+            self.variance_explained = np.array(self.model.explainedVariance)
             # np.array of len (`n_component`)
 
-            return model.transform(x)
+            return self.model.transform(x)
 
         # CASE : Use spark = False: use sklearn
         # --------------------------------------------------------
@@ -173,8 +184,11 @@ class Pca(object):
 
             # Perform PCA
             # -----------------------------------------------------
-            # Perform `fit_transform` if copy=False
-            result = self.pca.fit_transform(x)
+            # Perform `fit` for storing the model (arg copy should be set to True)
+            self.model = self.pca.fit(x)
+
+            # Perform PCA
+            result = self.pca.transform(x)
 
             # Perform variance explained
             self.variance_explained = self.pca.explained_variance_ratio_
@@ -212,13 +226,14 @@ class Pca(object):
                                 rownames=pc_list,
                                 table_name=table_name)
 
-        # Save the table
+        # Save the table (table name have been tested yet: is UNIQUE)
         IkatsApi.table.create(data=result2)
 
 
 def _check_alignement(tsuid_list):
     """
-    Check the alignment of the provided list of TS (`tsuid_list`).
+    Check the alignment of the provided list of TS (`tsuid_list`): same `start_date`, `end_date`, and `period`.
+    Operator `quality_stat` shall be launch on ts_list before !
 
     :param tsuid_list: List of tsuid of TS to check
     :type tsuid_list: List of str
@@ -246,16 +261,11 @@ def _check_alignement(tsuid_list):
         md = meta_list[tsuid]
 
         # CASE 1: no md (sd, ed, nb_point) -> raise ValueError
-        if 'ikats_start_date' not in md.keys() and \
-                'ikats_end_date' not in md.keys() and \
-                'qual_nb_points' not in md.keys():
-            raise ValueError("No MetaData associated with tsuid {}... Is it an existing TS ?".format(tsuid))
-        # CASE 2: If `period` is not calculated -> calculate it manually
+        if 'ikats_start_date' not in md.keys() and 'ikats_end_date' not in md.keys():
+            raise ValueError("No MetaData (start / end date) associated with tsuid {}... Is it an existing TS ?".format(tsuid))
+        # CASE 2: metadata `period` not available -> raise ValueError
         elif 'qual_ref_period' not in md.keys():
-            sd = int(md['ikats_start_date'])
-            ed = int(md['ikats_end_date'])
-            nb_points = int(md['qual_nb_points'])
-            period = int((ed - sd) / (nb_points - 1))
+            raise ValueError("No MetaData `qual_ref_period` with tsuid {}... Please launch `quality indicator`".format(tsuid))
         # CASE 3: OK (metadata `period` available...) -> continue
         else:
             period = int(float(md['qual_ref_period']))
@@ -282,8 +292,8 @@ def _check_alignement(tsuid_list):
                                  " not aligned with other TS (expected {})".format(tsuid, ed, ref_ed))
             # Compare `period`
             elif period != ref_period:
-                    raise ValueError("TS {}, metadata `ref_period` is {}:"
-                                     " not aligned with other TS (expected {})".format(tsuid, ed, ref_period))
+                raise ValueError("TS {}, metadata `ref_period` is {}:"
+                                 " not aligned with other TS (expected {})".format(tsuid, ed, ref_period))
 
     return ref_sd, ref_ed, ref_period
 
@@ -323,7 +333,6 @@ def spark_pca(tsuid_list,
 
     :raises:
         * ValueError: If one of the input TS have no metadata start date, or end date, or nb_point
-
     """
     # 0/ Init Pca object
     # ------------------------------------------------
@@ -337,113 +346,19 @@ def spark_pca(tsuid_list,
     try:
         # 2/ Get data
         # ------------------------------------------------
-        def __extract_ts_list(tsuid_list):
-            """
-            Extract all TS in a single Spark DataFrame
-
-            :return: Dataframe containing Timestamp, and one column of all values (as `Vector`)
-
-            ..Example:
-            +-------------+--------------+
-            | Timestamp   | `_INPUT_COL` |
-            +-------------+--------------+
-            | 14879030000 | [1.0, 1.0]   |
-            ...
-
-            """
-
-            # retrieve spark context
-            sc = SSessionManager.get_context()
-
-            # 1/ Get the chunks, and read TS by chunk
-            # ----------------------------------------------------------------------
-            # Get the chunks of THE FIRST TS
-            # Format: [(tsuid1, chunk_id, start_date, end_date), ...]
-            chunk1 = SparkUtils.get_chunks_def(tsuid=tsuid_list[0],
-                                               sd=ref_sd,
-                                               ed=ref_ed,
-                                               period=ref_period,
-                                               nb_points_by_chunk=nb_points_by_chunk)
-
-            # Duplicate `chunks` n_ts times (`len(tsuid_list)`) -> get the chunks of all TS
-            # Format: [(tsuid, chunk_id, start_date, end_date), ...]
-            chunks = []
-            # For each TS
-            for ts in tsuid_list:
-                # for each chunk
-                for chunk_id in range(len(chunk1)):
-                    # format: [(tsuid, chunkid, sd_chunk, ed_chunk)
-                    chunks.append((ts, chunk_id, chunk1[chunk_id][2], chunk1[chunk_id][3]))
-
-            # Get the chunks, and distribute them with Spark -> each TS is partitioned on the same points
-            rdd_ts_info = sc.parallelize(chunks, len(chunks))
-
-            # DESCRIPTION : Get the points within chunk range and suppress empty chunks
-            # INPUT  : [(tsuid, chunk_id, start_date, end_date), ...]
-            # OUTPUT : The dataset flat [(time, tsuid, index, value), ...]
-            rdd_chunk_data = rdd_ts_info \
-                .flatMap(lambda x: [(y[0], x[0], x[1], y[1]) for y in IkatsApi.ts.read(tsuid_list=x[0],
-                                                                                       sd=int(x[2]),
-                                                                                       ed=int(x[3]))[0].tolist()])
-            # ..Note1: Result of `IkatsApi.ts.read` is [time, value]
-            # ..Note2: Result has to be list (if np.array, difficult to convert into Spark DF)
-
-            # DESCRIPTION : Transform into Spark DataFrame
-            # INPUT  : The RDD flat [(time, tsuid, index, value), ...]
-            # OUTPUT : A DataFrame with columns ["Timestamp", "tsuid", "Index", "Value"]
-            df = rdd_chunk_data.toDF(["Timestamp", "tsuid", "Index", "Value"])
-            # Example:
-            # +-----------+------------------------------------------+-----+-----+
-            # |Timestamp  |tsuid                                     |Index|Value|
-            # +-----------+------------------------------------------+-----+-----+
-            # |14879030000|B246F6000001000C7C00000200004B000003000C81|0    |1.0  |
-            # ...
-
-            # DESCRIPTION : Concatenate all Values per timestamp
-            # INPUT  : A DataFrame with columns ["Timestamp", "tsuid", "Index", "Value"]
-            # OUTPUT : A DataFrame with columns ["Timestamp", "Value"],
-            # where col "Value" contains list of values per TS
-            df = df.groupBy('Timestamp').agg(F.collect_list("Value").alias("Value")).\
-                sort('Timestamp')
-            # Example:
-            # +-------------+--------------+
-            # | Timestamp   | Value        |
-            # +-------------+--------------+
-            # | 14879030000 | [1.0, 1.0]   |
-            # ...
-            # DataFrame[Timestamp: bigint, Value: array<double>]
-
-            # DESCRIPTION : Transform columns "Value" into `Vector` (necessary for input PCA.transform)
-            # INPUT  : A DataFrame with columns ["Timestamp", "Value"] : int, arrayList
-            # OUTPUT : A DataFrame with columns ["Timestamp", "Value"]: int, Vector
-            df = df.rdd.map(lambda x: Row(Timestamp=x[0], Value=Vectors.dense(x[1]))).toDF()
-            # Example:
-            # +-------------+--------------+
-            # | Timestamp   | Value        |
-            # +-------------+--------------+
-            # | 14879030000 | [1.0, 1.0]   |
-            # ...
-            # DataFrame[Timestamp: bigint, Value: vector]
-
-            # DESCRIPTION : Rename column "Value" into `_INPUT_COL`
-            # INPUT  : A DataFrame with columns ["Timestamp", "Value"] : int, arrayList
-            # OUTPUT : A DataFrame with columns ["Timestamp", _INPUT_COL]: int, Vector
-            df = df.selectExpr("Timestamp", "Value as {}".format(_INPUT_COL))
-            # Example:
-            # +-------------+--------------+
-            # | Timestamp   | `_INPUT_COL` |
-            # +-------------+--------------+
-            # | 14879030000 | [1.0, 1.0]   |
-            # ...
-
-            return df
-
-        start_loading_time = time.time()
-
-        # Import data into dataframe (["Index", "Timestamp", `_INPUT_COL`])
-        df = __extract_ts_list(tsuid_list=tsuid_list)
-
-        LOGGER.debug("Gathering time: %.3f seconds", time.time() - start_loading_time)
+        # DESCRIPTION: Import data into dataframe (["Timestamp", `_INPUT_COL`])
+        # INPUT  : tsuid list
+        # OUTPUT : A DataFrame with result columns ["Timestamp", `_INPUT_COL`]: int, Vector
+        df = SSessionManager().extract_aligned_tslist(tsuid_list=tsuid_list,
+                                                      sd=ref_sd, ed=ref_ed, period=ref_period,
+                                                      nb_points_by_chunk=nb_points_by_chunk,
+                                                      value_colname=_INPUT_COL)
+        # ..Example : df =
+        # +-------------+--------------+
+        # | Timestamp   |`_INPUT_COL`  |
+        # +-------------+--------------+
+        # | 14879030000 | [1.0, 1.0]   |
+        #  ...
 
         # 3/ Calculate PCA
         # -------------------------------
@@ -456,7 +371,6 @@ def spark_pca(tsuid_list,
         # | ...                              |
         # |[value_N_TS_1, ..., value_N_TS_M] |
         # +----------------------------------+
-        start_computing_time = time.time()
 
         # DESCRIPTION : Perform PCA
         # INPUT  : A DataFrame with columns ["Timestamp", _INPUT_COL]: int, Vector
@@ -470,8 +384,6 @@ def spark_pca(tsuid_list,
         # |14879030000|[1.0,1.0]    |[-1.4142135623730...|
         # ...
         # DataFrame[Timestamp: bigint, `_INPUT_COL`: vector, `_OUTPUT_COL`: vector]
-
-        LOGGER.debug("Computing time: %.3f seconds", time.time() - start_computing_time)
 
         # 4/ Format result
         # ------------------------------------------------
@@ -497,7 +409,7 @@ def spark_pca(tsuid_list,
         # INPUT  : DF with muliple columns (one per PC):  ["Timestamp", "PC[0]", ..., "PC[`n_component`-1]"]
         # OUTPUT : Same DF with columns renamed:  ["Timestamp", "1", ..., "`n_component`"]
         # More readable for user (start from 1)
-        new_colnames = ['Timestamp'] + ["{}".format(i) for i in range(1, n_components+1)]
+        new_colnames = ['Timestamp'] + ["{}".format(i) for i in range(1, n_components + 1)]
         pca_result = pca_result.toDF(*new_colnames)
         # Example
         # +-----------+------+-------+
@@ -508,12 +420,13 @@ def spark_pca(tsuid_list,
 
         # 5/ Get the table of variance explained
         # ------------------------------------------------
-        # try:
         current_pca.table_variance_explained(table_name=table_name)
-        # Table already exist
-        # except IkatsConflictError:
 
-        # 6/ Save result
+        # 6/ Store the pyspark's model
+        # ------------------------------------------------
+        model = current_pca.model
+
+        # 7/ Save result
         # ------------------------------------------------
         fid_pattern = fid_pattern.replace("{pc_id}", "{}")  # remove `pc_id` from `fid_pattern`
 
@@ -528,8 +441,17 @@ def spark_pca(tsuid_list,
 
             :param fid_pattern: pattern used to name the FID of the output TSUID.
             :type fid_pattern: str
+
+            :return result: The TS list created from input `data_frame` (save din Ikats).
+            :rtype result: list of dict
+
+            ..Example: result =
+            [
+                { "tsuid": "AB7CBD00000100000100000200000200000300000F", "funcId": "PC_1"}
+                ...
+            ]
             """
-            # 1/ INIT
+            # 7.1/ INIT
             # ------------------------------
             # Init result, list of dict
             result = []
@@ -540,38 +462,72 @@ def spark_pca(tsuid_list,
             list_col.remove('Timestamp')
             # Ex: ["1", "2"]
 
-            # 2/ Save each PC (column)
+            # 7.2/ Save each PC (column)
             # ------------------------------
+            # TODO: Optimiser pour éviter une boucle
             for pc in list_col:
-                # 3/ Generate new FID
+                # 7.3/ Generate new FID
                 # -------------------------------
                 # Add id of current PC (in 1..k), `fid_pattern` contains str '{}'
                 current_fid = fid_pattern.format(pc)
                 # Example: "PORTFOLIO_pc1"
-                try:
-                    IkatsApi.ts.create_ref(current_fid)
-                # Exception: if fid already exist
-                except IkatsConflictError:
-                    # TS already exist, append timestamp to be unique
-                    current_fid = '%s_%s' % (current_fid, int(time.time() * 1000))
-                    IkatsApi.ts.create_ref(current_fid)
+                IkatsApi.ts.create_ref(current_fid)
 
-                # 4/ Save Data
+                # Note that FID should be already checked !!
+
+                # 7.4/ Save Data
                 # -------------------------------
                 # OPERATION: Import result by partition into database, and collect
                 # INPUT: [Timestamp, 1] (col "1": correspond to first PC)
                 # OUTPUT: the new tsuid of the scaled ts (not used)
-                pca_result.\
-                    select(['Timestamp', pc]).\
-                    rdd.\
-                    mapPartitions(lambda x: SparkUtils.save_data(fid=current_fid, data=list(x)))\
+                # TODO: peut être mapper par index, utiliser des opérations par ligne
+                pca_result. \
+                    select(['Timestamp', pc]). \
+                    rdd. \
+                    mapPartitions(lambda x: SparkUtils.save_data(fid=current_fid, data=list(x))) \
                     .collect()
 
-                # 5/ Retrieve tsuid of the saved TS
+                # 7.5/ Retrieve tsuid of the saved TS
                 # -------------------------------
                 new_tsuid = IkatsApi.fid.tsuid(current_fid)
                 LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", current_fid, new_tsuid,
                              time.time() - start_saving_time)
+
+                # 7.6/ store metadata ikats_start_date, ikats_end_date and qual_nb_points
+                # ----------------------------------------------------------------------------
+                if not IkatsApi.md.create(
+                        tsuid=new_tsuid,
+                        name='ikats_start_date',
+                        value=ref_sd,
+                        data_type=DTYPE.date,
+                        force_update=True):
+                    LOGGER.error("Metadata ikats_start_date couldn't be saved for TS %s", new_tsuid)
+
+                if not IkatsApi.md.create(
+                        tsuid=new_tsuid,
+                        name='ikats_end_date',
+                        value=ref_ed,
+                        data_type=DTYPE.date,
+                        force_update=True):
+                    LOGGER.error("Metadata ikats_end_date couldn't be saved for TS %s", new_tsuid)
+
+                if not IkatsApi.md.create(
+                        tsuid=new_tsuid,
+                        name='qual_ref_period',
+                        value=ref_period,
+                        data_type=DTYPE.number,
+                        force_update=True):
+                    LOGGER.error("Metadata qual_ref_period couldn't be saved for TS %s", new_tsuid)
+
+                # Retrieve imported number of points from database
+                qual_nb_points = IkatsApi.ts.nb_points(tsuid=new_tsuid)
+                if not IkatsApi.md.create(
+                        tsuid=new_tsuid,
+                        name='qual_nb_points',
+                        value=qual_nb_points,
+                        data_type=DTYPE.number,
+                        force_update=True):
+                    LOGGER.error("Metadata qual_nb_points couldn't be saved for TS %s", new_tsuid)
 
                 # 6/ Update results
                 # -------------------------------
@@ -590,7 +546,8 @@ def spark_pca(tsuid_list,
 
         LOGGER.debug("Result import time: %.3f seconds", time.time() - start_saving_time)
 
-        return result_ts, table_name
+        # For now, no model is outputed
+        return result_ts, table_name  #, model
 
     except Exception:
         raise
@@ -713,7 +670,7 @@ def pca(tsuid_list, fid_pattern, n_components, table_name):
     start_saving_time = time.time()
 
     result1 = [__save_ts(data=transformed_data[:, i],
-                         PCId=i+1  # pc from 1 to n_components + 1 (more readable for user)
+                         PCId=i + 1  # pc from 1 to n_components + 1 (more readable for user)
                          ) for i in range(transformed_data.shape[1])]
 
     LOGGER.debug("Result import time: %.3f seconds", time.time() - start_saving_time)
@@ -722,15 +679,20 @@ def pca(tsuid_list, fid_pattern, n_components, table_name):
     # ------------------------------------------------
     current_pca.table_variance_explained(table_name=table_name)
 
+    # 6/ Store model from sklearn
+    # ------------------------------------------------
+    model = current_pca.model
+
     # 6/ Build final result
     # ------------------------------------------------
-    return result1, table_name
+    # For now, no model is outputed
+    return result1, table_name  #, model
 
 
 def pca_ts_list(ts_list,
                 n_components,
+                table_name,
                 fid_pattern="PC{pc_id}",
-                table_name="Variance_explained_PCA",
                 nb_points_by_chunk=NB_POINTS_BY_CHUNK,
                 nb_ts_criteria=NB_TS_CRITERIA,
                 spark=None,
@@ -745,30 +707,30 @@ def pca_ts_list(ts_list,
     :param n_components: Number of principal components to keep.
     :type n_components: int
 
+    :param table_name: Name of the created table (containing explained variance).
+    :type table_name: str
+
+    ..Note: At the beginning of the algo, test if `table_name` already exist.
+
     :param fid_pattern: pattern used to name the FID of the output TSUID.
            {pc_id} will be replaced by the id of the current principal component
     :type fid_pattern: str
-
-    :param table_name: Name of the created table (containing explained variance)
-    :type table_name: str
 
     :param nb_points_by_chunk: size of chunks in number of points
     (assuming time series is periodic and without holes)
     :type nb_points_by_chunk: int
 
-    :param nb_ts_criteria: The minimal number of TS to consider for considering Spark is
-    necessary
+    :param nb_ts_criteria: The minimal number of TS for considering Spark is necessary or not
     :type nb_ts_criteria: int
-
 
     :param spark: Flag indicating if Spark usage is:
         * forced (case True),
         * forced to be not used (case False)
-        * case None: Spark usage is checked (function of amount of data)
+        * case None: Spark usage is checked (depending of the amount of data to process)
     :type spark: bool or NoneType
 
     :returns:two objects:
-        * tsuid_list : A list of dict composed by original TSUID and the information about the new TS
+        * tsuid_list : A list of dict composed by resulted TSUID and the information about the new TS
         * Name of the ikats table containing variance explained, and cumulative variance explained per PC (3 col)
     :rtype: Tuple composed by:
         * list of dict
@@ -802,27 +764,76 @@ def pca_ts_list(ts_list,
         raise TypeError("Arg. type `n_components` is {}, expected `int`".format(type(n_components)))
     if n_components < 1:
         raise ValueError("Arg. `n_components` must be an integer > 1 (or None), get {}".format(n_components))
+    if n_components >= len(tsuid_list):
+        raise ValueError("Arg. `n_components` must be an integer <= n_ts, get {}".format(n_components))
+
+    # CHECK IF requested `fid_pattern` will not produce aready created fid
+    def __check_fid(pattern, n):
+        """
+        Check if `fid_pattern` correspond to an existing TS.
+
+        :param pattern: pattern used to name the FID of the output TSUID.
+           {pc_id} will be replaced by the id of the current principal component
+        :type pattern: str
+
+        :param n: The number of PC (`n_component`)
+        :type n: int
+
+        :raise ValueError: if an fid corresponding to `fid_pattern` already exists
+        """
+        pattern = pattern.replace("{pc_id}", "{}")
+        # Example: [`PC_1`, `PC_2`]
+        fid_pattern_list = [pattern.format(pc_id) for pc_id in range(1, n + 1)]
+
+        # Check if Fid already exist... -> raise ValueError
+        try:
+            # Find all TS corresponding to pattern requested
+            # (at least one of the pattern must match to not raise an error)
+            result = IkatsApi.fid.find("funcIds", fid_pattern_list)
+            # Example: [{'funcId': 'PC1', 'tsuid': 'D485E2000001000F7300000200004B000003000F74'}]
+
+            # At this point, if neither error is raised => At least one TS correspond to `fid_pattern`
+            raise NameError("Error in `fid_pattern`: correspond to already created TS: {}".format(
+                [x['funcId'] for x in result]
+            ))
+            # Example: "Error in `fid_pattern`: correspond to already created TS: ["PC_1", "PC_2"]"
+
+        # If NO TS FOUND -> ok
+        except ValueError:
+            pass
 
     # fid_pattern (str)
     if type(fid_pattern) is not str:
         raise TypeError("Arg. type `fid_pattern` is {}, expected `str`".format(type(fid_pattern)))
+
     if '{pc_id}' not in fid_pattern:
         # Add `_PC{pc_id}` into `fid_pattern` (at the end)
         fid_pattern += "_PC{pc_id}"
         LOGGER.debug("Add '_PC{pc_id}' to arg. `fid_pattern`")
+
+    __check_fid(pattern=fid_pattern, n=n_components)
 
     # Table name (str)
     if type(table_name) is not str:
         raise TypeError("Arg. `table_name` is {}, expected `str`".format(type(table_name)))
     if table_name is None or re.match('^[a-zA-Z0-9-_]+$', table_name) is None:
         raise ValueError("Error in table name")
+    # Table name: is it an already created table ?
+    try:
+        # Table already exist ...
+        IkatsApi.table.read(name=table_name)
+        # ... raise error
+        raise ValueError("Table `{}` already exist ! Please, specify an other `table_name`".format(table_name))
+    # Table do not already exist...
+    except IkatsNotFoundError:
+        pass  # ... ok
 
     # Nb points by chunk (int > 0)
-    if type(nb_points_by_chunk) is not int or nb_points_by_chunk < 0:
+    if type(nb_points_by_chunk) is not int or nb_points_by_chunk <= 0:
         raise TypeError("Arg. `nb_points_by_chunk` must be an integer > 1, get {}".format(nb_points_by_chunk))
 
     # nb_ts_criteria (int > 0)
-    if type(nb_ts_criteria) is not int or nb_ts_criteria < 0:
+    if type(nb_ts_criteria) is not int or nb_ts_criteria <= 0:
         raise TypeError("Arg. `nb_ts_criteria` must be an integer > 1, get {}".format(nb_ts_criteria))
 
     # spark (bool or None)
@@ -836,7 +847,8 @@ def pca_ts_list(ts_list,
                                                                         nb_points_by_chunk=nb_points_by_chunk)):
         # Arg `spark=True`: spark usage forced
         # Arg `spark=None`: Check using criteria (nb_points and number of ts)
-        return spark_pca(tsuid_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components,table_name=table_name, nb_points_by_chunk=nb_points_by_chunk)
+        return spark_pca(tsuid_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components,
+                         table_name=table_name, nb_points_by_chunk=nb_points_by_chunk)
     else:
         return pca(tsuid_list=tsuid_list, fid_pattern=fid_pattern, n_components=n_components, table_name=table_name)
 

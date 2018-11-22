@@ -20,17 +20,17 @@
       "type":"number"
     },
     {  
+      "name":"table_name",
+      "description":"Name of the table to create (contains variance explained)",
+      "type":"text",
+      "label":"Table name"
+    },
+    {  
       "name":"fid_pattern",
       "description":"Python pattern determining format of output functional identifiers. Example : PC_{pc_id}, where '{pc_id}' is the id of the principal component created (from 1 to n component)",
       "type":"text",
       "label":"FuncId pattern",
       "default_value":"PC{pc_id}"
-    },
-    {  
-      "name":"table_name",
-      "description":"Name of the table to create (contains variance explained)",
-      "type":"text",
-      "label":"Table name"
     }
   ],
   "outputs":[  
@@ -45,6 +45,12 @@
       "label":"Table",
       "description":"Table containing the variance explained, and the cumulative var. explained for each PC",
       "type":"table"
+    },
+    {
+      "name": "model",
+      "label": "Model",
+      "description": "The computed PCA model",
+      "type": "sk_model"
     }
   ]
 }
