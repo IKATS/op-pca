@@ -45,12 +45,6 @@
       "label":"Table",
       "description":"Table containing the variance explained, and the cumulative var. explained for each PC",
       "type":"table"
-    },
-    {
-      "name": "model",
-      "label": "Model",
-      "description": "The computed PCA model",
-      "type": "sk_model"
     }
   ]
 }
