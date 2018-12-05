@@ -346,19 +346,24 @@ def spark_pca(tsuid_list,
     try:
         # 2/ Get data
         # ------------------------------------------------
-        # DESCRIPTION: Import data into dataframe (["Timestamp", `_INPUT_COL`])
+        # DESCRIPTION: Import data into dataframe ([chunk_index, "Timestamp", `_INPUT_COL`])
         # INPUT  : tsuid list
-        # OUTPUT : A DataFrame with result columns ["Timestamp", `_INPUT_COL`]: int, Vector
-        df = SSessionManager().extract_aligned_tslist(tsuid_list=tsuid_list,
-                                                      sd=ref_sd, ed=ref_ed, period=ref_period,
-                                                      nb_points_by_chunk=nb_points_by_chunk,
-                                                      value_colname=_INPUT_COL)
+        # OUTPUT : A DataFrame with result columns ["index", "Timestamp", `_INPUT_COL`]: int, int,  Vector
+        _, df = SSessionManager().get_tslist_in_single_col(tsuid_list=tsuid_list,
+                                                           sd=ref_sd, ed=ref_ed, period=ref_period,
+                                                           nb_points_by_chunk=nb_points_by_chunk,
+                                                           value_colname=_INPUT_COL)
         # ..Example : df =
-        # +-------------+--------------+
-        # | Timestamp   |`_INPUT_COL`  |
-        # +-------------+--------------+
-        # | 14879030000 | [1.0, 1.0]   |
+        #  +-----+-------------+----------------+
+        #  |index|Timestamp    |`_INPUT_COL` |
+        #  +-----+-------------+-------------+
+        #  |0    |1449755761000|[0.08,0.07]  |
         #  ...
+
+        # DESCRIPTION: Select useful columns ("Timestamp", `_INPUT_COL`)
+        # INPUT  : DataFrame ["index", "Timestamp", `_INPUT_COL`]: int, int, Vector
+        # OUTPUT : Same DataFrame with columns ["Timestamp", `_INPUT_COL`]: int, Vector
+        df = df.select(["Timestamp", _INPUT_COL])
 
         # 3/ Calculate PCA
         # -------------------------------
@@ -387,7 +392,7 @@ def spark_pca(tsuid_list,
 
         # 4/ Format result
         # ------------------------------------------------
-        # A function that transform `vector` into `Lit` of double
+        # A function that transform `vector` into `List` of double
         vector_to_list = udf(lambda v: v.toArray().tolist(), ArrayType(DoubleType()))
 
         # DESCRIPTION : Transorm column containing result (type Vector) into multiple columns

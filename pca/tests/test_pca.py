@@ -599,7 +599,7 @@ class TestPCA(unittest.TestCase):
             # Number of Principal component to build
             n_components = 2
             # perform pca (arg `Spark` forced to `False` for testing NO SPARK mode)
-            result_tslist, result_table_name, result_model = pca_ts_list \
+            result_tslist, result_table_name = pca_ts_list \
                 (ts_list=tsuid_list,
                  n_components=n_components,
                  fid_pattern="PC{pc_id}",
@@ -619,10 +619,6 @@ class TestPCA(unittest.TestCase):
             # Check type of table from `result_table_name` (table)
             self.check_type_table(IkatsApi.table.read(result_table_name))
 
-            # Check type of `result_model` (sklearn.decomposition.pca.PCA)
-            msg = "Error, `result_model` have type {}, expected `sklearn.decomposition.pca.PCA`"
-            self.assertTrue(type(result_model) is sklearn.decomposition.pca.PCA, msg=msg.format(type(result_model)))
-
             # 2/ Test outputs values (TS transformed)
             # ---------------------------------------------
             # Get the resulted tsuid
@@ -641,11 +637,12 @@ class TestPCA(unittest.TestCase):
 
             # 3/ Clean TS list created / table created
             # ---------------------------------------------
+            self.clean_up_db(result_tslist)
+            IkatsApi.table.delete(result_table_name)
         finally:
             # Clean up database
             self.clean_up_db(tsuid_list)
-            self.clean_up_db(result_tslist)
-            IkatsApi.table.delete(result_table_name)
+
 
     def test_spark(self):
         """
@@ -664,11 +661,11 @@ class TestPCA(unittest.TestCase):
             # Number of Principal component to build
             n_components = 2
             # perform pca (arg `Spark` forced to `True` for testing SPARK mode)
-            result_tslist, result_table_name, result_model = pca_ts_list(ts_list=tsuid_list,
-                                                                         n_components=n_components,
-                                                                         fid_pattern="PC{pc_id}",
-                                                                         table_name="Variance_explained_PCA",
-                                                                         spark=True)
+            result_tslist, result_table_name = pca_ts_list(ts_list=tsuid_list,
+                                                           n_components=n_components,
+                                                           fid_pattern="PC{pc_id}",
+                                                           table_name="Variance_explained_PCA",
+                                                           spark=True)
 
             # 1/ Test output type
             # ---------------------------------------------
@@ -682,10 +679,6 @@ class TestPCA(unittest.TestCase):
 
             # Check type of table from `result_table_name` (table)
             self.check_type_table(IkatsApi.table.read(result_table_name))
-
-            # Check type of `result_model` (pyspark.ml.feature.PCAModel)
-            msg = "Error, `result_model` have type {}, expected `pyspark.ml.feature.PCAModel`"
-            self.assertTrue(type(result_model) is pyspark.ml.feature.PCAModel, msg=msg.format(type(result_model)))
 
             # 2/ Test outputs values (TS transformed)
             # ---------------------------------------------
@@ -705,10 +698,10 @@ class TestPCA(unittest.TestCase):
 
             # 3/ Clean TS list created / table created
             # ---------------------------------------------
+            self.clean_up_db(result_tslist)
+            IkatsApi.table.delete(result_table_name)
         finally:
             # Clean up database
             self.clean_up_db(tsuid_list)
-            self.clean_up_db(result_tslist)
-            IkatsApi.table.delete(result_table_name)
 
     # FOR NOW, SPARK AND SKLEARN PRODUCE DIFFERENT RESULTS: NO TEST
