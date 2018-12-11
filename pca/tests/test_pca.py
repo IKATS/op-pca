@@ -602,7 +602,7 @@ class TestPCA(unittest.TestCase):
             result_tslist, result_table_name = pca_ts_list \
                 (ts_list=tsuid_list,
                  n_components=n_components,
-                 fid_pattern="PC{pc_id}",
+                 fid_pattern="PC{pc_id}_test",
                  table_name="Variance_explained_PCA",
                  spark=False)
 
@@ -663,7 +663,7 @@ class TestPCA(unittest.TestCase):
             # perform pca (arg `Spark` forced to `True` for testing SPARK mode)
             result_tslist, result_table_name = pca_ts_list(ts_list=tsuid_list,
                                                            n_components=n_components,
-                                                           fid_pattern="PC{pc_id}",
+                                                           fid_pattern="PC{pc_id}_test",
                                                            table_name="Variance_explained_PCA",
                                                            spark=True)
 

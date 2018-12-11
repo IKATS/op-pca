@@ -807,17 +807,6 @@ def pca_ts_list(ts_list,
         except ValueError:
             pass
 
-    # fid_pattern (str)
-    if type(fid_pattern) is not str:
-        raise TypeError("Arg. type `fid_pattern` is {}, expected `str`".format(type(fid_pattern)))
-
-    if '{pc_id}' not in fid_pattern:
-        # Add `_PC{pc_id}` into `fid_pattern` (at the end)
-        fid_pattern += "_PC{pc_id}"
-        LOGGER.debug("Add '_PC{pc_id}' to arg. `fid_pattern`")
-
-    __check_fid(pattern=fid_pattern, n=n_components)
-
     # Table name (str)
     if type(table_name) is not str:
         raise TypeError("Arg. `table_name` is {}, expected `str`".format(type(table_name)))
@@ -844,6 +833,17 @@ def pca_ts_list(ts_list,
     # spark (bool or None)
     if type(spark) is not bool and spark is not None:
         raise TypeError("Arg. type `spark` is {}, expected `bool` or `NoneType`".format(type(spark)))
+
+    # fid_pattern (str)
+    if type(fid_pattern) is not str:
+        raise TypeError("Arg. type `fid_pattern` is {}, expected `str`".format(type(fid_pattern)))
+
+    if '{pc_id}' not in fid_pattern:
+        # Add `_PC{pc_id}` into `fid_pattern` (at the end)
+        fid_pattern += "_PC{pc_id}"
+        LOGGER.debug("Add '_PC{pc_id}' to arg. `fid_pattern`")
+
+    __check_fid(pattern=fid_pattern, n=n_components)
 
     # 1/ Check for spark usage and run
     # ----------------------------------------------------------
