@@ -89,7 +89,6 @@ class Pca(object):
         with `np.random`. Default None.
         :type seed: int or NoneType
         """
-        # TODO: reformater la classe pour mettre dedant toutes les fonctions
         # Store arguments
         self.spark = spark
 
@@ -348,22 +347,19 @@ def spark_pca(tsuid_list,
         # ------------------------------------------------
         # DESCRIPTION: Import data into dataframe ([chunk_index, "Timestamp", `_INPUT_COL`])
         # INPUT  : tsuid list
-        # OUTPUT : A DataFrame with result columns ["index", "Timestamp", `_INPUT_COL`]: int, int,  Vector
-        _, df = SSessionManager().get_tslist_in_single_col(tsuid_list=tsuid_list,
-                                                           sd=ref_sd, ed=ref_ed, period=ref_period,
-                                                           nb_points_by_chunk=nb_points_by_chunk,
-                                                           value_colname=_INPUT_COL)
+        # OUTPUT : A DataFrame with result columns ["index", "Timestamp", `_INPUT_COL`]: int, int, Vector
+        n_partitions, df = SSessionManager().get_tslist_in_single_col(tsuid_list=tsuid_list,
+                                                                      sd=ref_sd, ed=ref_ed, period=ref_period,
+                                                                      nb_points_by_chunk=nb_points_by_chunk,
+                                                                      value_colname=_INPUT_COL)
+        # `n_partitions` is the number of chunks defined after the function
+
         # ..Example : df =
         #  +-----+-------------+----------------+
         #  |index|Timestamp    |`_INPUT_COL` |
         #  +-----+-------------+-------------+
         #  |0    |1449755761000|[0.08,0.07]  |
         #  ...
-
-        # DESCRIPTION: Select useful columns ("Timestamp", `_INPUT_COL`)
-        # INPUT  : DataFrame ["index", "Timestamp", `_INPUT_COL`]: int, int, Vector
-        # OUTPUT : Same DataFrame with columns ["Timestamp", `_INPUT_COL`]: int, Vector
-        df = df.select(["Timestamp", _INPUT_COL])
 
         # 3/ Calculate PCA
         # -------------------------------
@@ -378,17 +374,17 @@ def spark_pca(tsuid_list,
         # +----------------------------------+
 
         # DESCRIPTION : Perform PCA
-        # INPUT  : A DataFrame with columns ["Timestamp", _INPUT_COL]: int, Vector
-        # OUTPUT : A DataFrame with result columns ["Timestamp", _INPUT_COL, _OUTPUT_COL]: int, Vector, Vector
+        # INPUT  : A DataFrame with columns ["index", "Timestamp", _INPUT_COL]: int, int, Vector
+        # OUTPUT : A DataFrame with result columns ["index", "Timestamp", _INPUT_COL, _OUTPUT_COL]: int, int, Vector, Vector
         # Where _INPUT_COL is Vector of len(N_TS), and _OUTPUT_COL vector of len (`n_component`)
         pca_result = current_pca.perform_pca(df)
         # Example:
-        # +-----------+-------------+--------------------+
-        # |  Timestamp| `_INPUT_COL`|       `_OUTPUT_COL`|
-        # +-----------+-------------+--------------------+
-        # |14879030000|[1.0,1.0]    |[-1.4142135623730...|
+        # +-----+-----------+--------------------+--------------------+
+        # |index|  Timestamp|            features|        PCA_Features|
+        # +-----+-----------+--------------------+--------------------+
+        # |    0|14879030000|[-1.4142135381698...|[0.88809365850139...|
         # ...
-        # DataFrame[Timestamp: bigint, `_INPUT_COL`: vector, `_OUTPUT_COL`: vector]
+        # DataFrame[index: bigint, Timestamp: bigint, `_INPUT_COL`: vector, `_OUTPUT_COL`: vector]
 
         # 4/ Format result
         # ------------------------------------------------
@@ -396,31 +392,31 @@ def spark_pca(tsuid_list,
         vector_to_list = udf(lambda v: v.toArray().tolist(), ArrayType(DoubleType()))
 
         # DESCRIPTION : Transorm column containing result (type Vector) into multiple columns
-        # INPUT  : A DataFrame with result columns ["Timestamp", _INPUT_COL, _OUTPUT_COL]: int, Vector, Vector
-        # OUTPUT : Same DF with muliple columns (one per PC):  ["Timestamp", _INPUT_COL, _OUTPUT_COL, PC1, ..., PC{k}]
+        # INPUT  : A DataFrame with result columns ['index', "Timestamp", _INPUT_COL, _OUTPUT_COL]: int, int, Vector, Vector
+        # OUTPUT : Same DF with muliple columns (one per PC):  ['index', "Timestamp", _INPUT_COL, _OUTPUT_COL, PC1, ..., PC{k}]
         pca_result = (pca_result
                       .withColumn("PC", vector_to_list(col(_OUTPUT_COL)))  # Vector to list
-                      .select(["Timestamp"] + [col("PC")[i] for i in range(n_components)]))  # Split col containing list
+                      .select(["index", "Timestamp"] + [col("PC")[i] for i in range(n_components)]))  # Split col containing list
 
         # Example
-        # +-----------+------+-------+
-        # |  Timestamp| PC[0]| PC[1] |
-        # +-----------+------+-------+
-        # |14879030000|-1.4  | -2    |
+        # +-----+-----------+-------------------+-------------------+
+        # |index|  Timestamp|              PC[0]|              PC[1]|
+        # +-----+-----------+-------------------+-------------------+
+        # |    0|14879030000| 0.8880936585013974|-1.7920071196329377|
         # ...
-        # DataFrame[Timestamp: bigint, PC[0]: double, PC[1]: double]
+        # DataFrame[index: bigint, Timestamp: bigint, PC[0]: double, PC[1]: double]
 
         # DESCRIPTION : Rename columns ("PC[1]" -> "1")
-        # INPUT  : DF with muliple columns (one per PC):  ["Timestamp", "PC[0]", ..., "PC[`n_component`-1]"]
-        # OUTPUT : Same DF with columns renamed:  ["Timestamp", "1", ..., "`n_component`"]
+        # INPUT  : DF with muliple columns (one per PC):  ["index", "Timestamp", "PC[0]", ..., "PC[`n_component`-1]"]
+        # OUTPUT : Same DF with columns renamed:  ["index", "Timestamp", "1", ..., "`n_component`"]
         # More readable for user (start from 1)
-        new_colnames = ['Timestamp'] + ["{}".format(i) for i in range(1, n_components + 1)]
+        new_colnames = ['index', 'Timestamp'] + ["{}".format(i) for i in range(1, n_components + 1)]
         pca_result = pca_result.toDF(*new_colnames)
         # Example
-        # +-----------+------+-------+
-        # |  Timestamp|    1 |    2  |
-        # +-----------+------+-------+
-        # |14879030000|-1.4  | -2    |
+        # +-------+-------------+-------------------+---------------------+
+        # | index | Timestamp   | 1                 | 2                   |
+        # +-------+-------------+-------------------+---------------------+
+        # | 0     | 14879030000 | 0.8880936585013974| -1.7920071196329377 |
         # ...
 
         # 5/ Get the table of variance explained
@@ -433,7 +429,12 @@ def spark_pca(tsuid_list,
 
         # 7/ Save result
         # ------------------------------------------------
-        fid_pattern = fid_pattern.replace("{pc_id}", "{}")  # remove `pc_id` from `fid_pattern`
+        # Re-partition the dataset by
+        #
+        pca_result.repartition('index')
+
+        # remove `pc_id` from `fid_pattern`
+        fid_pattern = fid_pattern.replace("{pc_id}", "{}")
 
         def __save_df(data_frame, fid_pattern=fid_pattern):
             """
@@ -463,13 +464,14 @@ def spark_pca(tsuid_list,
 
             # List of columns to save
             list_col = data_frame.columns
-            # The Timestamp is not DATA to save
+
+            # The index/Timestamp is not DATA to save
+            list_col.remove('index')
             list_col.remove('Timestamp')
-            # Ex: ["1", "2"]
+            # Ex: list_col = ["1", "2"]
 
             # 7.2/ Save each PC (column)
             # ------------------------------
-            # TODO: Optimiser pour éviter une boucle
             for pc in list_col:
                 # 7.3/ Generate new FID
                 # -------------------------------
@@ -485,7 +487,6 @@ def spark_pca(tsuid_list,
                 # OPERATION: Import result by partition into database, and collect
                 # INPUT: [Timestamp, 1] (col "1": correspond to first PC)
                 # OUTPUT: the new tsuid of the scaled ts (not used)
-                # TODO: peut être mapper par index, utiliser des opérations par ligne
                 pca_result. \
                     select(['Timestamp', pc]). \
                     rdd. \
@@ -815,7 +816,7 @@ def pca_ts_list(ts_list,
     # Table name: is it an already created table ?
     try:
         # Table already exist ...
-        IkatsApi.table.read(name=table_name)
+        IkatsApi.table.read(name=table_name)  # method `table.read` easier to manipulate than `table.list`
         # ... raise error
         raise ValueError("Table `{}` already exist ! Please, specify an other `table_name`".format(table_name))
     # Table do not already exist...

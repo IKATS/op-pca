@@ -519,11 +519,20 @@ class TestPCA(unittest.TestCase):
                 pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern="a", table_name="a b ")
 
             # `table name` already exist (ValueError)
+            table_name = "UNIT_TEST_TABLE_PCA"
+
+            # Create a test table content
+            table = _format_table(np.array([[1, 2]]), rownames=["row"], table_name=table_name, colnames=['1', '2'])
+
+            # Create the table
+            IkatsApi.table.create(data=table)
             # Get the name of A TABLE ALREADY CREATED (can bug if no available table)
-            table_name = IkatsApi.table.list()[0]['name']
             msg = "Testing arguments : Error in testing `table_name` name (already exist)"
             with self.assertRaises(ValueError, msg=msg):
                 pca_ts_list(ts_list=tsuid_list, n_components=2, fid_pattern="a", table_name=table_name)
+
+            # Delete test table
+            IkatsApi.table.delete(name=table_name)
 
             # nb_points_by_chunk
             # ----------------------------
@@ -642,7 +651,6 @@ class TestPCA(unittest.TestCase):
         finally:
             # Clean up database
             self.clean_up_db(tsuid_list)
-
 
     def test_spark(self):
         """
