@@ -21,13 +21,13 @@
     },
     {  
       "name":"table_name",
-      "description":"Name of the table to create (contains variance explained)",
+      "description":"Name of the table to create (contains variance explained). Raise error if name already exist.",
       "type":"text",
       "label":"Table name"
     },
     {  
       "name":"fid_pattern",
-      "description":"Python pattern determining format of output functional identifiers. Example : PC_{pc_id}, where '{pc_id}' is the id of the principal component created (from 1 to n component)",
+      "description":"Python pattern determining format of output functional identifiers. Example : PC_{pc_id}, where '{pc_id}' is the id of the principal component created (from 1 to n component).  Raise error if an fid name already exist.",
       "type":"text",
       "label":"FuncId pattern",
       "default_value":"PC{pc_id}"
