@@ -1,0 +1,50 @@
+IKATS
+Copyright 2017-2018 CS Systèmes d'Information
+
+This product includes software developed by
+CS Systèmes d'Information (http://www.c-s.fr/)
+
+
+=================================================
+Apache Software License
+https://www.apache.org/licenses/
+=================================================
+
+The following components are provided under Apache Software License:
+
+    pyspark (1.6.2)
+    http://spark.apache.org/docs/2.1.0/api/python/_modules/pyspark.html
+
+
+=================================================
+Berkeley Software Distribution
+https://opensource.org/licenses/BSD-3-Clause
+=================================================
+
+The following components are provided under Berkeley Software Distribution:
+
+    numpy (1.11.0)
+    http://www.numpy.org/license.html
+
+    py4j (0.10.3)
+    https://pypi.org/project/py4j/
+
+    scikit-learn (0.19.1)
+    https://pypi.org/project/scikit-learn/
+
+    scipy (0.17.1)
+    https://pypi.org/project/scipy/
+
+    Django (1.8.6)
+    https://pypi.org/project/Django/
+
+
+=================================================
+  PSF License
+  https://docs.python.org/3/license.html
+
+=================================================
+
+The following components are provided under PSF Licenses :
+
+  Python (3.6.0)
